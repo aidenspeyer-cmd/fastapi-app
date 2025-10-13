@@ -410,4 +410,4 @@ A tiny web app for you and friends to pick **outright winners** and **over/under
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app:app --reload
+uvicorn app:app --reload```
