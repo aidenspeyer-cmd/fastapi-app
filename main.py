@@ -1,7 +1,7 @@
 # Create project files and zip them for download
 import os, textwrap, zipfile, json, pathlib
 
-root = "/mnt/data/top25-pickem"
+root = "data/top25-pickem"
 templates_dir = os.path.join(root, "templates")
 static_dir = os.path.join(root, "static")
 os.makedirs(templates_dir, exist_ok=True)
