@@ -402,7 +402,7 @@ procfile = r'''web: uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}'''
 
 readme_md = r'''# Top-25 CFB Pick’em (FastAPI)
 
-A tiny web app for you and friends to pick **outright winners** and **over/under** on ESPN Top-25 college football games each week. Stores picks in SQLite and scores automatically after finals.'''
+A tiny web app for you and friends to pick **outright winners** and **over/under** on ESPN Top-25 college football games each week. Stores picks in SQLite and scores automatically after finals.
 
 ## Quick start (local)
 
@@ -410,4 +410,4 @@ A tiny web app for you and friends to pick **outright winners** and **over/under
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app:app --reload```
+uvicorn app:app --reload'''
