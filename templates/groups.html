@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="groups-container">
+  <h2>Groups & Leagues</h2>
+  <a href="/games" class="nav">Back to Games</a>
+  
+  <!-- Form to create a new group/league -->
+  <form method="post" action="/groups/create" class="group-form">
+    <label for="group_name">Create a new group:</label>
+    <input type="text" name="group_name" id="group_name" required placeholder="Group name">
+    <button type="submit" class="lime">Create</button>
+  </form>
+  <hr>
+
+  <!-- List of sample/joinable groups (stubbed for now) -->
+  <h3>Your Groups</h3>
+  {% if groups and groups|length > 0 %}
+    <ul class="groups-list">
+      {% for group in groups %}
+        <li>
+          <strong>{{ group["group_name"] }}</strong>
+          <a href="/groups/leaderboard?group_id={{ group['group_id'] }}" class="nav">Leaderboard</a>
+          <a href="/groups/join?group_id={{ group['group_id'] }}" class="nav">Join</a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>You aren’t in any groups yet. Create one above or join with an invite code!</p>
+  {% endif %}
+</div>
+{% endblock %}
