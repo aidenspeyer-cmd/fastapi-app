@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-import sqlite3, secrets, httpx, asyncio
+import sqlite3, secrets, httpx, asyncio, json
 from typing import Optional, List
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -138,6 +138,9 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
             away = next((c for c in comps if c.get("homeAway") == "away"), {})
             home_team = home.get("team", {})
             away_team = away.get("team", {})
+            print("HOME TEAM FULL DICT:", json.dumps(home_team, indent=2))
+            print("AWAY TEAM FULL DICT:", json.dumps(away_team, indent=2))
+            break
 
             # Debug prints for troubleshooting
             print(f"\n--- GAME DEBUG ---")
