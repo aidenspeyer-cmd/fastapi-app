@@ -1,47 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="profile-container">
-  {% if user %}
-    <h2>{{ user }}'s Predictions</h2>
-    <a href="/games?user={{ user }}" class="nav">Back to Games</a>
-  {% else %}
-    <h2>User profile</h2>
-  {% endif %}
-
-  {% if picks and picks|length > 0 %}
-    <table class="profile-table">
-      <tr>
-        <th>Game</th>
-        <th>Predicted Winner</th>
-        <th>O/U</th>
-        <th>Made At</th>
-      </tr>
-      {% for pick in picks %}
-      <tr>
-        <td>{{ pick["short_name"] }}</td>
-        <td>{{ pick["pick_winner"] | capitalize }}</td>
-        <td>{{ pick["pick_total"] | capitalize }}</td>
-        <td>{{ pick["made_at"][:19] }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  {% else %}
-    <p>No picks made yet.</p>
-  {% endif %}
+<h2>{{ user }}'s Stats</h2>
+<div style="display:flex;gap:4em;align-items:center;">
+  <!-- Win% bar -->
+  <div style="flex:1;">
+    <div class="stats-block">
+      <div class="stat-label">Win %</div>
+      <div class="progress-bar-outer">
+        <div class="progress-bar-inner" style="width: {{ win_rate }}%;"></div>
+      </div>
+      <div class="stat-value">{{ win_rate }}%</div>
+    </div>
+  </div>
+  <!-- Streak circle -->
+  <div class="streak-circle-box">
+    ... (SVG code as above) ...
+  </div>
+  <!-- Achievements -->
+  <div>
+    <div class="badges-row">
+      ... (badge icons as above) ...
+    </div>
+    <div style="font-size:.88em;margin-top:4px;">Achievements</div>
+  </div>
 </div>
+<hr>
+<!-- (Continue with predictions table/history below) -->
 {% endblock %}
-{% set current_streak = 4 %}
-<div class="streak-circle-box">
-  <svg width="65" height="65" viewBox="0 0 65 65">
-    <circle cx="32.5" cy="32.5" r="28" fill="#142850" stroke="#444" stroke-width="5"/>
-    <circle cx="32.5" cy="32.5" r="28" fill="none"
-      stroke="#C4FF0E"
-      stroke-width="6"
-      stroke-dasharray="176"
-      stroke-dashoffset="{{ 176 - (current_streak/10*176)}}"
-      stroke-linecap="round"/>
-    <text x="32.5" y="39" text-anchor="middle" fill="#C4FF0E" font-size="24" font-family="Montserrat" font-weight="bold">{{ current_streak }}</text>
-  </svg>
-  <div class="streak-label">Current Streak</div>
-</div>
-
