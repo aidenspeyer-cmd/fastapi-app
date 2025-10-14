@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
-import sqlite3
-from typing import Optional
-import httpx
+import sqlite3, secrets, httpx, asyncio
+from typing import Optional, List
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,15 +21,12 @@ def db():
 def init_db():
     with db() as conn:
         c = conn.cursor()
-        # Updated games table with all the fields needed
         c.execute("""
         CREATE TABLE IF NOT EXISTS games (
             game_id TEXT PRIMARY KEY,
             short_name TEXT,
-            home_id TEXT,
-            home_name TEXT,
-            away_id TEXT,
-            away_name TEXT,
+            home_id TEXT, home_name TEXT,
+            away_id TEXT, away_name TEXT,
             start_utc TEXT,
             over_under REAL,
             final_home_score INTEGER,
@@ -38,9 +34,24 @@ def init_db():
             is_final BOOLEAN DEFAULT 0
         );
         """)
-        # ... (users, picks, groups, etc. unchanged) ...
-        # Ensure the rest of your tables are created here as well!
- 
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            join_date TEXT
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS picks (
+            pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user TEXT,
+            game_id TEXT,
+            pick_winner TEXT,
+            pick_total TEXT,
+            made_at TEXT,
+            UNIQUE(user, game_id)
+        );
+        """)
         c.execute("""
         CREATE TABLE IF NOT EXISTS groups (
             group_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,8 +77,7 @@ def init_db():
             UNIQUE(username, badge)
         );
         """)
-conn.commit()
-
+        conn.commit()
 init_db()
 
 def next_saturday(date: datetime) -> datetime:
@@ -75,7 +85,7 @@ def next_saturday(date: datetime) -> datetime:
     days_ahead = (5 - dow) % 7
     return date + timedelta(days=days_ahead)
 
-async def fetch_top25_for_week() -> list[dict]:
+async def fetch_top25_for_week() -> List[dict]:
     today = datetime.utcnow()
     sat = next_saturday(today)
     sun = sat + timedelta(days=1)
@@ -114,7 +124,7 @@ async def fetch_top25_for_week() -> list[dict]:
             })
         return games
 
-def upsert_games(games: list[dict]):
+def upsert_games(games: List[dict]):
     with db() as conn:
         c = conn.cursor()
         for g in games:
@@ -134,6 +144,27 @@ def upsert_games(games: list[dict]):
                 g["away_id"], g["away_name"], g["start_utc"], g["over_under"]
             ))
         conn.commit()
+
+async def update_scores_with_finals(date_range):
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
+        r.raise_for_status()
+        data = r.json()
+        for ev in data.get("events", []):
+            gid = ev.get("id")
+            comp = (ev.get("competitions") or [{}])[0]
+            home = [c for c in comp.get("competitors", []) if c.get("homeAway") == "home"]
+            away = [c for c in comp.get("competitors", []) if c.get("homeAway") == "away"]
+            home_score = int(home[0]["score"]) if home and "score" in home[0] else None
+            away_score = int(away[0]["score"]) if away and "score" in away[0] else None
+            status = (comp.get("status") or {}).get("type", {})
+            completed = bool(status.get("completed"))
+            with db() as conn:
+                conn.execute(
+                    "UPDATE games SET final_home_score=?, final_away_score=?, is_final=? WHERE game_id=?",
+                    (home_score, away_score, completed, gid)
+                )
+                conn.commit()
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -155,7 +186,6 @@ async def make_prediction(
 ):
     with db() as conn:
         c = conn.cursor()
-        # Optional: insert user if not exists
         c.execute("INSERT OR IGNORE INTO users (username, join_date) VALUES (?, ?)", (user, datetime.utcnow().isoformat()))
         c.execute("""
             INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
@@ -165,17 +195,6 @@ async def make_prediction(
                 pick_total=excluded.pick_total,
                 made_at=excluded.made_at
         """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
-        if current_streak >= 5:
-        c.execute(
-            "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
-            (user, "Streak5", datetime.utcnow().isoformat())
-        )
-    # Award a win% badge
-    if win_rate >= 80 and total_picks >= 10:
-        c.execute(
-            "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
-            (user, "Win80", datetime.utcnow().isoformat())
-        )
         conn.commit()
     return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
@@ -183,7 +202,6 @@ async def make_prediction(
 def profile(request: Request, user: Optional[str] = None):
     with db() as conn:
         c = conn.cursor()
-        # Fetch all picks for this user (oldest first, to calculate streak correctly)
         c.execute("""
             SELECT p.*, g.short_name, g.final_home_score, g.final_away_score, g.over_under, g.is_final
             FROM picks p
@@ -191,19 +209,14 @@ def profile(request: Request, user: Optional[str] = None):
             WHERE p.user=?
             ORDER BY p.made_at ASC
         """, (user,))
-        c.execute("SELECT badge FROM achievements WHERE username=?", (user,))
-        badges = [row["badge"] for row in c.fetchall()]
-# Pass `badges` to your template for display
         picks = c.fetchall()
 
         total_picks = 0
         wins = 0
-        streak = 0
         current_streak = 0
         last_was_win = None
 
         for pick in picks:
-            # Only count games that are final
             if not pick["is_final"]:
                 continue
             total_picks += 1
@@ -229,6 +242,23 @@ def profile(request: Request, user: Optional[str] = None):
 
         win_rate = int((wins / total_picks) * 100) if total_picks > 0 else 0
 
+        # Achievements logic
+        badges = []
+        if current_streak >= 5:
+            c.execute(
+                "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
+                (user, "Streak5", datetime.utcnow().isoformat())
+            )
+            badges.append("Streak5")
+        if win_rate >= 80 and total_picks >= 10:
+            c.execute(
+                "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
+                (user, "Win80", datetime.utcnow().isoformat())
+            )
+            badges.append("Win80")
+        c.execute("SELECT badge FROM achievements WHERE username=?", (user,))
+        badges += [row["badge"] for row in c.fetchall() if row["badge"] not in badges]
+
     return templates.TemplateResponse(
         "profile.html",
         {
@@ -236,10 +266,22 @@ def profile(request: Request, user: Optional[str] = None):
             "user": user,
             "picks": picks,
             "win_rate": win_rate,
-            "current_streak": current_streak
+            "current_streak": current_streak,
+            "badges": badges
         }
     )
-    import secrets
+
+@app.get("/groups", response_class=HTMLResponse)
+def groups(request: Request, user: str = ""):
+    with db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT g.* FROM groups g
+            JOIN group_members gm ON gm.group_id = g.group_id
+            WHERE gm.username = ?
+        """, (user,))
+        groups = c.fetchall()
+    return templates.TemplateResponse("groups.html", {"request": request, "groups": groups, "user": user})
 
 @app.post("/groups/create")
 def create_group(request: Request, group_name: str = Form(...), user: str = "anonymous"):
@@ -258,33 +300,27 @@ def create_group(request: Request, group_name: str = Form(...), user: str = "ano
         conn.commit()
     return RedirectResponse(url="/groups", status_code=303)
 
-@app.get("/groups", response_class=HTMLResponse)
-def groups(request: Request, user: str = ""):
-    with db() as conn:
-        c = conn.cursor()
-        # Example: show all groups for the logged-in user
-        c.execute("""
-            SELECT g.* FROM groups g
-            JOIN group_members gm ON gm.group_id = g.group_id
-            WHERE gm.username = ?
-        """, (user,))
-        groups = c.fetchall()
-    return templates.TemplateResponse("groups.html", {"request": request, "groups": groups, "user": user})
-
-@app.get("/groups", response_class=HTMLResponse)
-def groups(request: Request):
-    # Stub: Implement group logic here
-    return templates.TemplateResponse("groups.html", {"request": request})
-
 @app.get("/leaderboard", response_class=HTMLResponse)
 def leaderboard(request: Request):
-    # Stub: compute and show leaderboard across all users or by group
     with db() as conn:
         c = conn.cursor()
         c.execute("""
-            SELECT user, COUNT(*) as correct FROM picks
-            GROUP BY user
+            SELECT p.user, COUNT(*) as correct FROM picks p
+            JOIN games g ON g.game_id = p.game_id
+            WHERE g.is_final = 1
+            AND ((p.pick_winner = CASE WHEN g.final_home_score > g.final_away_score THEN 'home' ELSE 'away' END)
+                 AND (p.pick_total = CASE WHEN g.final_home_score + g.final_away_score > g.over_under THEN 'over' ELSE 'under' END))
+            GROUP BY p.user
             ORDER BY correct DESC
         """)
         board = c.fetchall()
     return templates.TemplateResponse("leaderboard.html", {"request": request, "board": board})
+
+@app.post("/admin/update_scores")
+async def admin_update_scores():
+    today = datetime.utcnow()
+    sat = next_saturday(today)
+    sun = sat + timedelta(days=1)
+    date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
+    await update_scores_with_finals(date_range)
+    return {"status": "game results updated"}
