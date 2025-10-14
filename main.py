@@ -175,9 +175,17 @@ async def root(request: Request):
 async def games(request: Request, user: Optional[str] = None):
     games = await fetch_top25_for_week()
     upsert_games(games)
-    # Already limited to top 15 in fetch_top25_for_week
+    # Remove games already picked by user if user is logged in
+    if user:
+        with db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT game_id FROM picks WHERE user=?",
+                (user,)
+            )
+            picked_game_ids = {row["game_id"] for row in c.fetchall()}
+        games = [g for g in games if g["game_id"] not in picked_game_ids]
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
-
 @app.post("/predict")
 async def make_prediction(
     request: Request,
