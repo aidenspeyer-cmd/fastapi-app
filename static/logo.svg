@@ -1,0 +1,6 @@
+<svg width="220" height="50" viewBox="0 0 220 50" fill="none">
+  <rect width="220" height="50" rx="12" fill="#0A1128"/>
+  <text x="60" y="32" fill="#C4FF0E" font-size="28" font-family="Montserrat, Arial" font-weight="bold">Pick’em Pro</text>
+  <ellipse cx="32" cy="25" rx="16" ry="7" fill="#142850" stroke="#C4FF0E" stroke-width="3"/>
+  <rect x="26" y="20" width="12" height="6" rx="3" fill="#C4FF0E" />
+</svg>
