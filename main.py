@@ -122,7 +122,8 @@ async def fetch_top25_for_week() -> List[dict]:
                 "start_utc": comp.get("date"),
                 "over_under": over_under
             })
-        return games
+        # Return only the top 15 games
+        return games[:15]
 
 def upsert_games(games: List[dict]):
     with db() as conn:
@@ -174,6 +175,7 @@ async def root(request: Request):
 async def games(request: Request, user: Optional[str] = None):
     games = await fetch_top25_for_week()
     upsert_games(games)
+    # Already limited to top 15 in fetch_top25_for_week
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
 
 @app.post("/predict")
@@ -187,29 +189,39 @@ async def make_prediction(
     with db() as conn:
         c = conn.cursor()
         c.execute("INSERT OR IGNORE INTO users (username, join_date) VALUES (?, ?)", (user, datetime.utcnow().isoformat()))
-        c.execute("""
-            INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user, game_id) DO UPDATE SET
-                pick_winner=excluded.pick_winner,
-                pick_total=excluded.pick_total,
-                made_at=excluded.made_at
-        """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
-        conn.commit()
+        try:
+            # Only insert; picks are locked in and cannot be changed
+            c.execute("""
+                INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # Already picked—do nothing, or show a notification in your template
+            pass
     return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
 @app.get("/profile", response_class=HTMLResponse)
 def profile(request: Request, user: Optional[str] = None):
     with db() as conn:
         c = conn.cursor()
-        c.execute("""
-            SELECT p.*, g.short_name, g.final_home_score, g.final_away_score, g.over_under, g.is_final
-            FROM picks p
-            LEFT JOIN games g ON g.game_id = p.game_id
-            WHERE p.user=?
-            ORDER BY p.made_at ASC
-        """, (user,))
-        picks = c.fetchall()
+        # Top 15 games for the week
+        c.execute("SELECT game_id FROM games ORDER BY start_utc ASC LIMIT 15")
+        top_game_ids = [row["game_id"] for row in c.fetchall()]
+        if not top_game_ids:
+            picks = []
+        else:
+            qmarks = ",".join("?" for _ in top_game_ids)
+            query = f"""
+                SELECT p.*, g.short_name, g.final_home_score, g.final_away_score, g.over_under, g.is_final
+                FROM picks p
+                LEFT JOIN games g ON g.game_id = p.game_id
+                WHERE p.user=? AND p.game_id IN ({qmarks})
+                ORDER BY p.made_at ASC
+            """
+            params = [user] + top_game_ids
+            c.execute(query, params)
+            picks = c.fetchall()
 
         total_picks = 0
         wins = 0
