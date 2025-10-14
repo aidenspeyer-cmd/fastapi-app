@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="profile-container">
+  {% if user %}
+    <h2>{{ user }}'s Predictions</h2>
+    <a href="/games?user={{ user }}" class="nav">Back to Games</a>
+  {% else %}
+    <h2>User profile</h2>
+  {% endif %}
+
+  {% if picks and picks|length > 0 %}
+    <table class="profile-table">
+      <tr>
+        <th>Game</th>
+        <th>Predicted Winner</th>
+        <th>O/U</th>
+        <th>Made At</th>
+      </tr>
+      {% for pick in picks %}
+      <tr>
+        <td>{{ pick["short_name"] }}</td>
+        <td>{{ pick["pick_winner"] | capitalize }}</td>
+        <td>{{ pick["pick_total"] | capitalize }}</td>
+        <td>{{ pick["made_at"][:19] }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No picks made yet.</p>
+  {% endif %}
+</div>
+{% endblock %}
