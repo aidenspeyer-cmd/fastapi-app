@@ -112,3 +112,12 @@ a.nav {
   color: #C4FF0E;
   font-size: 1.1em;
 }
+.streak-circle-box {
+  display: inline-block;
+  text-align: center;
+  margin: 10px 32px 10px 0;
+}
+.streak-label {
+  margin-top: 3px;
+  font-size: 0.95em;
+}
