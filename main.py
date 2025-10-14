@@ -161,15 +161,50 @@ async def make_prediction(
 def profile(request: Request, user: Optional[str] = None):
     with db() as conn:
         c = conn.cursor()
+        # Fetch all picks for this user, latest first
         c.execute("""
             SELECT p.*, g.short_name FROM picks p
             LEFT JOIN games g ON g.game_id = p.game_id
             WHERE p.user=?
-            ORDER BY made_at DESC
+            ORDER BY made_at ASC
         """, (user,))
         picks = c.fetchall()
-    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "picks": picks})
+        
+        # Calculate stats
+        total_picks = len(picks)
+        wins = 0
+        streak = 0
+        last_pick_win = None
 
+        # You need logic for "correct prediction" — here, assume you know the real outcome and it's in picks table (expand as you add that info)
+        for pick in reversed(picks):  # latest first
+            # For demo: treat home winning as correct winner, or check against actual results if stored
+            actual_winner = "home"  # TODO: Replace with actual result for pick["game_id"]
+            actual_ou = "over"      # TODO: Replace with result logic
+
+            correct_pick = (pick["pick_winner"] == actual_winner) and (pick["pick_total"] == actual_ou)
+            if correct_pick:
+                wins += 1
+                if streak == 0 or last_pick_win:
+                    streak += 1
+                last_pick_win = True
+            else:
+                last_pick_win = False
+                streak = 0  # streak broken
+
+        win_rate = int((wins / total_picks) * 100) if total_picks > 0 else 0
+
+    return templates.TemplateResponse(
+        "profile.html",
+        {
+            "request": request,
+            "user": user,
+            "picks": picks,
+            "win_rate": win_rate,
+            "current_streak": streak,  # Pass to template
+            # Add other variables for badges/achievements as you expand!
+        }
+    )
 @app.get("/groups", response_class=HTMLResponse)
 def groups(request: Request):
     # Stub: Implement group logic here
