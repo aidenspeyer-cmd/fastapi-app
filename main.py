@@ -85,6 +85,42 @@ def next_saturday(date: datetime) -> datetime:
     days_ahead = (5 - dow) % 7
     return date + timedelta(days=days_ahead)
 
+# --- Place this helper after next_saturday(), before your fetch function ---
+
+def get_team_rank(team_dict):
+    """
+    Robustly extracts the team's poll rank from ESPN API JSON.
+    Returns int if found, otherwise None.
+    """
+    # Check curatedRank: {'current': 1}
+    curated_rank = team_dict.get("curatedRank", {})
+    if isinstance(curated_rank, dict):
+        rank_val = curated_rank.get("current")
+        try:
+            rank_int = int(rank_val)
+            return rank_int
+        except Exception:
+            pass
+    # Fallback fields
+    for key in ["rank", "currentRank", "seed"]:
+        val = team_dict.get(key)
+        try:
+            rank_int = int(val)
+            return rank_int
+        except Exception:
+            continue
+    # Try rankings list (AP poll usually first)
+    rankings = team_dict.get("rankings", [])
+    if rankings and isinstance(rankings, list):
+        try:
+            first_rank = rankings[0].get("rank")
+            if first_rank is not None:
+                return int(first_rank)
+        except Exception:
+            pass
+    return None
+
+# --- Replace your fetch_top25_for_week with this ---
 async def fetch_top15_games_for_week() -> List[dict]:
     today = datetime.utcnow()
     sat = next_saturday(today)
@@ -106,18 +142,9 @@ async def fetch_top15_games_for_week() -> List[dict]:
             home_team = home.get("team", {})
             away_team = away.get("team", {})
 
-            # Try to get rank (as int) for each team; fallback to None if missing
-            home_rank = None
-            away_rank = None
-            try:
-                # Modern API: rank may be int directly or nested
-                home_rank = int(home_team.get("rank") or home_team.get("currentRank") or home_team.get("seed") or 0) or None
-            except Exception:
-                home_rank = None
-            try:
-                away_rank = int(away_team.get("rank") or away_team.get("currentRank") or away_team.get("seed") or 0) or None
-            except Exception:
-                away_rank = None
+            # --- Use the robust rank fetcher ---
+            home_rank = get_team_rank(home_team)
+            away_rank = get_team_rank(away_team)
 
             over_under = None
             odds_list = comp.get("odds") or []
@@ -127,8 +154,8 @@ async def fetch_top15_games_for_week() -> List[dict]:
                 except (TypeError, ValueError):
                     over_under = None
 
-            # Only include if either team is ranked 1-15
-            if (home_rank and 1 <= home_rank <= 15) or (away_rank and 1 <= away_rank <= 15):
+            # --- Only keep the game if one team is ranked 1-15 ---
+            if (home_rank is not None and 1 <= home_rank <= 15) or (away_rank is not None and 1 <= away_rank <= 15):
                 games.append({
                     "game_id": gid,
                     "short_name": ev.get("shortName"),
@@ -140,6 +167,26 @@ async def fetch_top15_games_for_week() -> List[dict]:
                     "over_under": over_under
                 })
         return games
+
+# --- Change your /games route ---
+
+@app.get("/games", response_class=HTMLResponse)
+async def games(request: Request, user: Optional[str] = None):
+    games = await fetch_top15_games_for_week()
+    upsert_games(games)
+    # Remove games already picked by user if user is logged in
+    if user:
+        with db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT game_id FROM picks WHERE user=?",
+                (user,)
+            )
+            picked_game_ids = {row["game_id"] for row in c.fetchall()}
+        games = [g for g in games if g["game_id"] not in picked_game_ids]
+    return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
+
+# --- Everything else in main.py stays the same ---
 
 
 def upsert_games(games: List[dict]):
