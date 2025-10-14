@@ -1,0 +1,5 @@
+body { font-family: Arial, sans-serif; background: #fafafa; }
+table { border-collapse: collapse; width: 100%; }
+td, th { border: 1px solid #aaa; padding: 0.25em; }
+h1, h2 { color: #111; }
+a { color: #07c; }
