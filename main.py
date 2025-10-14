@@ -198,15 +198,14 @@ async def make_prediction(
         c = conn.cursor()
         c.execute("INSERT OR IGNORE INTO users (username, join_date) VALUES (?, ?)", (user, datetime.utcnow().isoformat()))
         try:
-            # Only insert; picks are locked in and cannot be changed
             c.execute("""
                 INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
                 VALUES (?, ?, ?, ?, ?)
             """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
             conn.commit()
         except sqlite3.IntegrityError:
-            # Already picked—do nothing, or show a notification in your template
             pass
+    # Correct: redirect includes user context
     return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
 @app.get("/profile", response_class=HTMLResponse)
