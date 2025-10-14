@@ -141,6 +141,32 @@ async def fetch_top15_games_for_week() -> List[dict]:
             away = next((c for c in comps if c.get("homeAway") == "away"), {})
             home_team = home.get("team", {})
             away_team = away.get("team", {})
+    # Inside fetch_top15_games_for_week, just before you call get_team_rank:
+for ev in events:
+    gid = ev.get("id")
+    comp = (ev.get("competitions") or [{}])[0]
+    comps = comp.get("competitors", [])
+    home = next((c for c in comps if c.get("homeAway") == "home"), {})
+    away = next((c for c in comps if c.get("homeAway") == "away"), {})
+    home_team = home.get("team", {})
+    away_team = away.get("team", {})
+
+    # --- DEBUG PRINTS START HERE ---
+    print(f"\n--- GAME DEBUG ---")
+    print(f"Home team: {home_team.get('displayName')}")
+    print(f"  curatedRank: {home_team.get('curatedRank')}")
+    print(f"  rank: {home_team.get('rank')}")
+    print(f"  currentRank: {home_team.get('currentRank')}")
+    print(f"  seed: {home_team.get('seed')}")
+    print(f"  rankings: {home_team.get('rankings')}")
+
+    print(f"Away team: {away_team.get('displayName')}")
+    print(f"  curatedRank: {away_team.get('curatedRank')}")
+    print(f"  rank: {away_team.get('rank')}")
+    print(f"  currentRank: {away_team.get('currentRank')}")
+    print(f"  seed: {away_team.get('seed')}")
+    print(f"  rankings: {away_team.get('rankings')}")
+    # --- DEBUG PRINTS END ----
 
             # --- Use the robust rank fetcher ---
             home_rank = get_team_rank(home_team)
