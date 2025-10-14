@@ -1,13 +1,3 @@
-# Create project files and zip them for download
-import os, textwrap, zipfile, json, pathlib
-
-root = "data/top25-pickem"
-templates_dir = os.path.join(root, "templates")
-static_dir = os.path.join(root, "static")
-os.makedirs(templates_dir, exist_ok=True)
-os.makedirs(static_dir, exist_ok=True)
-
-app_py = r'''
 from datetime import datetime, timedelta
 import sqlite3
 import httpx
@@ -45,8 +35,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS picks (
             user TEXT,
             game_id TEXT,
-            pick_winner TEXT,     -- 'home' or 'away'
-            pick_total TEXT,      -- 'over' or 'under'
+            pick_winner TEXT, -- 'home' or 'away'
+            pick_total TEXT, -- 'over' or 'under'
             locked INTEGER DEFAULT 0,
             line_ou_at_pick REAL,
             created_at TEXT,
@@ -55,7 +45,6 @@ def init_db():
         );
         """)
         conn.commit()
-
 init_db()
 
 def next_saturday(date: datetime) -> datetime:
@@ -71,44 +60,38 @@ async def fetch_top25_for_week() -> list[dict]:
     sun = sat + timedelta(days=1)
     date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
     url = f"{ESPN_SCOREBOARD}?dates={date_range}"
-
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url)
         r.raise_for_status()
         data = r.json()
-
-    events = data.get("events", [])
-    games = []
-    for ev in events:
-        gid = ev.get("id")
-        comp = (ev.get("competitions") or [{}])[0]
-
-        comps = comp.get("competitors", [])
-        home = next((c for c in comps if c.get("homeAway") == "home"), {})
-        away = next((c for c in comps if c.get("homeAway") == "away"), {})
-
-        home_team = home.get("team", {})
-        away_team = away.get("team", {})
-
-        over_under = None
-        odds_list = comp.get("odds") or []
-        if odds_list:
-            try:
-                over_under = float(odds_list[0].get("overUnder"))
-            except (TypeError, ValueError):
-                over_under = None
-
-        games.append({
-            "game_id": gid,
-            "short_name": ev.get("shortName"),
-            "home_id": str(home_team.get("id")) if home_team else None,
-            "home_name": home_team.get("displayName") if home_team else None,
-            "away_id": str(away_team.get("id")) if away_team else None,
-            "away_name": away_team.get("displayName") if away_team else None,
-            "start_utc": comp.get("date"),
-            "over_under": over_under
-        })
-    return games
+        events = data.get("events", [])
+        games = []
+        for ev in events:
+            gid = ev.get("id")
+            comp = (ev.get("competitions") or [{}])[0]
+            comps = comp.get("competitors", [])
+            home = next((c for c in comps if c.get("homeAway") == "home"), {})
+            away = next((c for c in comps if c.get("homeAway") == "away"), {})
+            home_team = home.get("team", {})
+            away_team = away.get("team", {})
+            over_under = None
+            odds_list = comp.get("odds") or []
+            if odds_list:
+                try:
+                    over_under = float(odds_list[0].get("overUnder"))
+                except (TypeError, ValueError):
+                    over_under = None
+            games.append({
+                "game_id": gid,
+                "short_name": ev.get("shortName"),
+                "home_id": str(home_team.get("id")) if home_team else None,
+                "home_name": home_team.get("displayName") if home_team else None,
+                "away_id": str(away_team.get("id")) if away_team else None,
+                "away_name": away_team.get("displayName") if away_team else None,
+                "start_utc": comp.get("date"),
+                "over_under": over_under
+            })
+        return games
 
 def upsert_games(games: list[dict]):
     with db() as conn:
@@ -153,7 +136,7 @@ async def submit(
     user: str = Form(...),
     payload: str = Form(...)
 ):
-    lines = [l for l in payload.split("\\n") if l.strip()]
+    lines = [l for l in payload.split("\n") if l.strip()]
     with db() as conn:
         c = conn.cursor()
         for line in lines:
@@ -183,26 +166,26 @@ async def fetch_scores_and_totals_for_scoring(date_range: str) -> dict:
         r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
         r.raise_for_status()
         data = r.json()
-    out = {}
-    for ev in data.get("events", []):
-        gid = ev.get("id")
-        comp = (ev.get("competitions") or [{}])[0]
-        status = (comp.get("status") or {}).get("type", {})
-        completed = status.get("completed") is True
-        if not completed:
-            continue
-        total_points = 0
-        for team in comp.get("competitors", []):
-            try:
-                total_points += int(team.get("score"))
-            except Exception:
-                pass
-        winner_side = None
-        for team in comp.get("competitors", []):
-            if team.get("winner") is True:
-                winner_side = team.get("homeAway")
-        out[gid] = {"total_points": total_points, "winner_side": winner_side}
-    return out
+        out = {}
+        for ev in data.get("events", []):
+            gid = ev.get("id")
+            comp = (ev.get("competitions") or [{}])[0]
+            status = (comp.get("status") or {}).get("type", {})
+            completed = status.get("completed") is True
+            if not completed:
+                continue
+            total_points = 0
+            for team in comp.get("competitors", []):
+                try:
+                    total_points += int(team.get("score"))
+                except Exception:
+                    pass
+            winner_side = None
+            for team in comp.get("competitors", []):
+                if team.get("winner") is True:
+                    winner_side = team.get("homeAway")
+            out[gid] = {"total_points": total_points, "winner_side": winner_side}
+        return out
 
 @app.get("/board", response_class=HTMLResponse)
 async def leaderboard(request: Request, user: str = ""):
@@ -211,203 +194,30 @@ async def leaderboard(request: Request, user: str = ""):
     sun = sat + timedelta(days=1)
     date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
     finals = await fetch_scores_and_totals_for_scoring(date_range)
-
     with db() as conn:
         c = conn.cursor()
         c.execute("SELECT * FROM picks")
         all_picks = c.fetchall()
-
-    points_by_user = {}
-    for p in all_picks:
-        gid = p["game_id"]
-        if gid not in finals:
-            continue
-        fin = finals[gid]
-        u = p["user"]
-        points_by_user.setdefault(u, 0)
-
-        if p["pick_winner"] == fin["winner_side"]:
-            points_by_user[u] += 1
-
-        ou_line = p["line_ou_at_pick"]
-        total_points = fin["total_points"]
-        if ou_line is None:
-            pass
-        elif p["pick_total"] == "over" and total_points > ou_line:
-            points_by_user[u] += 1
-        elif p["pick_total"] == "under" and total_points < ou_line:
-            points_by_user[u] += 1
-
-    board = sorted(
-        [{"user": u, "points": pts} for u, pts in points_by_user.items()],
-        key=lambda r: (-r["points"], r["user"].lower())
-    )
-
+        points_by_user = {}
+        for p in all_picks:
+            gid = p["game_id"]
+            if gid not in finals:
+                continue
+            fin = finals[gid]
+            u = p["user"]
+            points_by_user.setdefault(u, 0)
+            if p["pick_winner"] == fin["winner_side"]:
+                points_by_user[u] += 1
+            ou_line = p["line_ou_at_pick"]
+            total_points = fin["total_points"]
+            if ou_line is None:
+                pass
+            elif p["pick_total"] == "over" and total_points > ou_line:
+                points_by_user[u] += 1
+            elif p["pick_total"] == "under" and total_points < ou_line:
+                points_by_user[u] += 1
+        board = sorted(
+            [{"user": u, "points": pts} for u, pts in points_by_user.items()],
+            key=lambda r: (-r["points"], r["user"].lower())
+        )
     return templates.TemplateResponse("board.html", {"request": request, "board": board, "me": user})
-'''
-
-base_html = r'''<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Top-25 Pick’em</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="/static/style.css" rel="stylesheet">
-</head>
-<body class="min-h-screen bg-neutral-50 text-neutral-900">
-  <main class="max-w-4xl mx-auto p-4">
-    <h1 class="text-2xl font-semibold mb-4">Top-25 CFB Pick’em</h1>
-    {% block content %}{% endblock %}
-  </main>
-</body>
-</html>
-'''
-
-index_html = r'''{% extends "base.html" %}
-{% block content %}
-<form method="post" action="/submit" id="pick-form" class="space-y-4">
-  <div class="flex items-center gap-2">
-    <label class="text-sm">Your name</label>
-    <input name="user" required placeholder="e.g., Wyatt" class="border px-3 py-2 rounded w-48">
-  </div>
-
-  <div class="text-sm text-neutral-600">Pick outright winner + Over/Under for each game. Picks lock at kickoff.</div>
-
-  <input type="hidden" name="payload" id="payload">
-  <div class="space-y-3">
-    {% for g in games %}
-    <div class="rounded border bg-white p-3">
-      <div class="flex items-center justify-between">
-        <div class="font-medium">{{ g["short_name"] or (g["away_name"] ~ " @ " ~ g["home_name"]) }}</div>
-        <div class="text-xs text-neutral-600">
-          O/U: {{ "%.1f"|format(g["over_under"] or 0.0) }}
-        </div>
-      </div>
-      <div class="mt-2 grid grid-cols-2 gap-2">
-        <label class="border rounded p-2 flex items-center gap-2">
-          <input type="radio" name="winner-{{ g['game_id'] }}" value="away" required>
-          <span>{{ g["away_name"] }}</span>
-        </label>
-        <label class="border rounded p-2 flex items-center gap-2">
-          <input type="radio" name="winner-{{ g['game_id'] }}" value="home" required>
-          <span>{{ g["home_name"] }}</span>
-        </label>
-      </div>
-      <div class="mt-2 grid grid-cols-2 gap-2">
-        <label class="border rounded p-2 flex items-center gap-2">
-          <input type="radio" name="ou-{{ g['game_id'] }}" value="over" required>
-          <span>Over</span>
-        </label>
-        <label class="border rounded p-2 flex items-center gap-2">
-          <input type="radio" name="ou-{{ g['game_id'] }}" value="under" required>
-          <span>Under</span>
-        </label>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-
-  <div class="flex gap-3">
-    <button class="px-4 py-2 rounded bg-black text-white">Submit Picks</button>
-    <a href="/board" class="px-4 py-2 rounded border">Leaderboard</a>
-  </div>
-</form>
-
-<script>
-  const form = document.getElementById('pick-form');
-  form.addEventListener('submit', (e) => {
-    const payload = [];
-    {% for g in games %}
-    const w = document.querySelector('input[name="winner-{{ g["game_id"] }}"]:checked');
-    const o = document.querySelector('input[name="ou-{{ g["game_id"] }}"]:checked');
-    if (w && o) payload.push(`{{ g["game_id"] }}|${w.value}|${o.value}`);
-    {% endfor %}
-    document.getElementById('payload').value = payload.join('\\n');
-  });
-</script>
-{% endblock %}
-'''
-
-board_html = r'''{% extends "base.html" %}
-{% block content %}
-<h2 class="text-xl font-medium mb-3">Leaderboard</h2>
-<table class="w-full border-collapse">
-  <thead>
-    <tr class="text-left border-b">
-      <th class="py-2">User</th>
-      <th class="py-2">Points</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in board %}
-    <tr class="border-b">
-      <td class="py-2">{{ row.user }}{% if row.user == me %} (you){% endif %}</td>
-      <td class="py-2">{{ row.points }}</td>
-    </tr>
-    {% else %}
-    <tr><td class="py-4 text-neutral-500" colspan="2">No scored picks yet.</td></tr>
-    {% endfor %}
-  </tbody>
-</table>
-<a href="/" class="inline-block mt-4 px-4 py-2 rounded border">Back to picks</a>
-{% endblock %}
-'''
-
-style_css = r'''* { box-sizing: border-box; }
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-.border { border: 1px solid rgba(0,0,0,.12); }
-.rounded { border-radius: .5rem; }
-.bg-white { background: #fff; }
-.bg-neutral-50 { background: #fafafa; }
-.text-neutral-900 { color: #111; }
-.text-neutral-600 { color: #666; }
-.text-xs { font-size: .8rem; }
-.text-sm { font-size: .9rem; }
-.text-xl { font-size: 1.25rem; }
-.text-2xl { font-size: 1.5rem; }
-.font-medium { font-weight: 600; }
-.font-semibold { font-weight: 600; }
-.min-h-screen { min-height: 100vh; }
-.max-w-4xl { max-width: 64rem; }
-.mx-auto { margin-left: auto; margin-right: auto; }
-.p-3 { padding: .75rem; } .p-4 { padding: 1rem; }
-.py-2 { padding-top: .5rem; padding-bottom: .5rem; }
-.mt-2 { margin-top: .5rem; } .mb-3 { margin-bottom: .75rem; } .mb-4 { margin-bottom: 1rem; }
-.space-y-3 > * + * { margin-top: .75rem; }
-.space-y-4 > * + * { margin-top: 1rem; }
-.grid { display: grid; } .grid-cols-2 { grid-template-columns: repeat(2,minmax(0,1fr)); }
-.gap-2 { gap: .5rem; } .gap-3 { gap: .75rem; }
-.flex { display: flex; } .items-center { align-items: center; } .justify-between { justify-content: space-between; }
-.w-full { width: 100%; } .w-48 { width: 12rem; }
-.inline-block { display: inline-block; }
-.bg-black { background: #000; }
-.text-white { color: #fff; }
-.px-3 { padding-left: .75rem; padding-right: .75rem; }
-.px-4 { padding-left: 1rem; padding-right: 1rem; }
-.rounded { border-radius: .5rem; }
-a { color: inherit; text-decoration: none; }
-a:hover { text-decoration: underline; }
-button { cursor: pointer; }
-table { width: 100%; }
-'''
-
-requirements_txt = r'''fastapi
-uvicorn[standard]
-httpx
-jinja2
-python-multipart
-'''
-
-procfile = r'''web: uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}'''
-
-readme_md = r'''# Top-25 CFB Pick’em (FastAPI)
-
-A tiny web app for you and friends to pick **outright winners** and **over/under** on ESPN Top-25 college football games each week. Stores picks in SQLite and scores automatically after finals.
-
-## Quick start (local)
-
-```bash
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app:app --reload'''
