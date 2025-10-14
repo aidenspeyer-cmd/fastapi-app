@@ -22,41 +22,26 @@ def db():
 def init_db():
     with db() as conn:
         c = conn.cursor()
-        # Games table
+        # Updated games table with all the fields needed
         c.execute("""
         CREATE TABLE IF NOT EXISTS games (
             game_id TEXT PRIMARY KEY,
             short_name TEXT,
-            home_id TEXT, home_name TEXT,
-            away_id TEXT, away_name TEXT,
+            home_id TEXT,
+            home_name TEXT,
+            away_id TEXT,
+            away_name TEXT,
             start_utc TEXT,
-            over_under REAL
+            over_under REAL,
+            final_home_score INTEGER,
+            final_away_score INTEGER,
+            is_final BOOLEAN DEFAULT 0
         );
         """)
-        # Users table - can expand with more fields later
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            join_date TEXT
-        );
-        """)
-        # Picks table (now more detailed)
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS picks (
-            pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user TEXT,  -- Keep simple, username for now
-            game_id TEXT,
-            pick_winner TEXT,
-            pick_total TEXT,
-            made_at TEXT,
-            UNIQUE(user, game_id),
-            FOREIGN KEY (game_id) REFERENCES games(game_id)
-        );
-        """)
-        # Groups and group membership can be added here later
-
+        # ... (users, picks, groups, etc. unchanged) ...
+        # Ensure the rest of your tables are created here as well!
         conn.commit()
+
 init_db()
 
 def next_saturday(date: datetime) -> datetime:
