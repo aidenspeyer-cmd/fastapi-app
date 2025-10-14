@@ -6,6 +6,10 @@ from typing import List, Dict
 app = FastAPI()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to CFB 2025 Pick'Em!"}
+
 # In-memory user picks {username: [pick, pick, ...]}
 user_picks: Dict[str, List[dict]] = {}
 
