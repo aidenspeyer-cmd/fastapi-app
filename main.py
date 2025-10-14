@@ -168,31 +168,31 @@ for ev in events:
     print(f"  rankings: {away_team.get('rankings')}")
     # --- DEBUG PRINTS END ----
 
-            # --- Use the robust rank fetcher ---
-            home_rank = get_team_rank(home_team)
-            away_rank = get_team_rank(away_team)
+    # --- Use the robust rank fetcher ---
+    home_rank = get_team_rank(home_team)
+    away_rank = get_team_rank(away_team)
 
+    over_under = None
+    odds_list = comp.get("odds") or []
+    if odds_list:
+        try:
+            over_under = float(odds_list[0].get("overUnder"))
+        except (TypeError, ValueError):
             over_under = None
-            odds_list = comp.get("odds") or []
-            if odds_list:
-                try:
-                    over_under = float(odds_list[0].get("overUnder"))
-                except (TypeError, ValueError):
-                    over_under = None
 
-            # --- Only keep the game if one team is ranked 1-15 ---
-            if (home_rank is not None and 1 <= home_rank <= 15) or (away_rank is not None and 1 <= away_rank <= 15):
-                games.append({
-                    "game_id": gid,
-                    "short_name": ev.get("shortName"),
-                    "home_id": str(home_team.get("id")) if home_team else None,
-                    "home_name": home_team.get("displayName") if home_team else None,
-                    "away_id": str(away_team.get("id")) if away_team else None,
-                    "away_name": away_team.get("displayName") if away_team else None,
-                    "start_utc": comp.get("date"),
-                    "over_under": over_under
-                })
-        return games
+    # --- Only keep the game if one team is ranked 1-15 ---
+    if (home_rank is not None and 1 <= home_rank <= 15) or (away_rank is not None and 1 <= away_rank <= 15):
+        games.append({
+            "game_id": gid,
+            "short_name": ev.get("shortName"),
+            "home_id": str(home_team.get("id")) if home_team else None,
+            "home_name": home_team.get("displayName") if home_team else None,
+            "away_id": str(away_team.get("id")) if away_team else None,
+            "away_name": away_team.get("displayName") if away_team else None,
+            "start_utc": comp.get("date"),
+            "over_under": over_under
+        })
+return games
 
 # --- Change your /games route ---
 
