@@ -85,8 +85,6 @@ def next_saturday(date: datetime) -> datetime:
     days_ahead = (5 - dow) % 7
     return date + timedelta(days=days_ahead)
 
-# --- Place this helper after next_saturday(), before your fetch function ---
-
 def get_team_rank(team_dict):
     """
     Robustly extracts the team's poll rank from ESPN API JSON.
@@ -120,7 +118,6 @@ def get_team_rank(team_dict):
             pass
     return None
 
-# --- Replace your fetch_top25_for_week with this ---
 async def fetch_top15_games_for_week() -> List[dict]:
     today = datetime.utcnow()
     sat = next_saturday(today)
@@ -141,79 +138,47 @@ async def fetch_top15_games_for_week() -> List[dict]:
             away = next((c for c in comps if c.get("homeAway") == "away"), {})
             home_team = home.get("team", {})
             away_team = away.get("team", {})
-    # Inside fetch_top15_games_for_week, just before you call get_team_rank:
-    for ev in events:
-        gid = ev.get("id")
-        comp = (ev.get("competitions") or [{}])[0]
-        comps = comp.get("competitors", [])
-        home = next((c for c in comps if c.get("homeAway") == "home"), {})
-        away = next((c for c in comps if c.get("homeAway") == "away"), {})
-        home_team = home.get("team", {})
-        away_team = away.get("team", {})
 
-        # --- DEBUG PRINTS START HERE ---
-        print(f"\n--- GAME DEBUG ---")
-        print(f"Home team: {home_team.get('displayName')}")
-        print(f"  curatedRank: {home_team.get('curatedRank')}")
-        print(f"  rank: {home_team.get('rank')}")
-        print(f"  currentRank: {home_team.get('currentRank')}")
-        print(f"  seed: {home_team.get('seed')}")
-        print(f"  rankings: {home_team.get('rankings')}")
+            # --- DEBUG PRINTS START HERE ---
+            print(f"\n--- GAME DEBUG ---")
+            print(f"Home team: {home_team.get('displayName')}")
+            print(f"  curatedRank: {home_team.get('curatedRank')}")
+            print(f"  rank: {home_team.get('rank')}")
+            print(f"  currentRank: {home_team.get('currentRank')}")
+            print(f"  seed: {home_team.get('seed')}")
+            print(f"  rankings: {home_team.get('rankings')}")
+            print(f"Away team: {away_team.get('displayName')}")
+            print(f"  curatedRank: {away_team.get('curatedRank')}")
+            print(f"  rank: {away_team.get('rank')}")
+            print(f"  currentRank: {away_team.get('currentRank')}")
+            print(f"  seed: {away_team.get('seed')}")
+            print(f"  rankings: {away_team.get('rankings')}")
+            # --- DEBUG PRINTS END ----
 
-        print(f"Away team: {away_team.get('displayName')}")
-        print(f"  curatedRank: {away_team.get('curatedRank')}")
-        print(f"  rank: {away_team.get('rank')}")
-        print(f"  currentRank: {away_team.get('currentRank')}")
-        print(f"  seed: {away_team.get('seed')}")
-        print(f"  rankings: {away_team.get('rankings')}")
-        # --- DEBUG PRINTS END ----
+            home_rank = get_team_rank(home_team)
+            away_rank = get_team_rank(away_team)
 
-        # --- Use the robust rank fetcher ---
-        home_rank = get_team_rank(home_team)
-        away_rank = get_team_rank(away_team)
+            over_under = None
+            odds_list = comp.get("odds") or []
+            if odds_list:
+                try:
+                    over_under = float(odds_list[0].get("overUnder"))
+                except (TypeError, ValueError):
+                    over_under = None
 
-        over_under = None
-        odds_list = comp.get("odds") or []
-        if odds_list:
-            try:
-                over_under = float(odds_list[0].get("overUnder"))
-            except (TypeError, ValueError):
-                over_under = None
-
-        # --- Only keep the game if one team is ranked 1-15 ---
-        if (home_rank is not None and 1 <= home_rank <= 15) or (away_rank is not None and 1 <= away_rank <= 15):
-            games.append({
-                "game_id": gid,
-                "short_name": ev.get("shortName"),
-                "home_id": str(home_team.get("id")) if home_team else None,
-                "home_name": home_team.get("displayName") if home_team else None,
-                "away_id": str(away_team.get("id")) if away_team else None,
-                "away_name": away_team.get("displayName") if away_team else None,
-                "start_utc": comp.get("date"),
-                "over_under": over_under
-            })
-    return games
-
-# --- Change your /games route ---
-
-@app.get("/games", response_class=HTMLResponse)
-async def games(request: Request, user: Optional[str] = None):
-    games = await fetch_top15_games_for_week()
-    upsert_games(games)
-    # Remove games already picked by user if user is logged in
-    if user:
-        with db() as conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT game_id FROM picks WHERE user=?",
-                (user,)
-            )
-            picked_game_ids = {row["game_id"] for row in c.fetchall()}
-        games = [g for g in games if g["game_id"] not in picked_game_ids]
-    return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
-
-# --- Everything else in main.py stays the same ---
-
+            # Only add if one team is ranked 1-15
+            if (home_rank is not None and 1 <= home_rank <= 15) or (away_rank is not None and 1 <= away_rank <= 15):
+                games.append({
+                    "game_id": gid,
+                    "short_name": ev.get("shortName"),
+                    "home_id": str(home_team.get("id")) if home_team else None,
+                    "home_name": home_team.get("displayName") if home_team else None,
+                    "away_id": str(away_team.get("id")) if away_team else None,
+                    "away_name": away_team.get("displayName") if away_team else None,
+                    "start_utc": comp.get("date"),
+                    "over_under": over_under
+                })
+        return games
 
 def upsert_games(games: List[dict]):
     with db() as conn:
@@ -263,9 +228,8 @@ async def root(request: Request):
 
 @app.get("/games", response_class=HTMLResponse)
 async def games(request: Request, user: Optional[str] = None):
-    games = await fetch_top25_for_week()
+    games = await fetch_top15_games_for_week()
     upsert_games(games)
-    # Remove games already picked by user if user is logged in
     if user:
         with db() as conn:
             c = conn.cursor()
@@ -276,6 +240,7 @@ async def games(request: Request, user: Optional[str] = None):
             picked_game_ids = {row["game_id"] for row in c.fetchall()}
         games = [g for g in games if g["game_id"] not in picked_game_ids]
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
+
 @app.post("/predict")
 async def make_prediction(
     request: Request,
@@ -295,14 +260,12 @@ async def make_prediction(
             conn.commit()
         except sqlite3.IntegrityError:
             pass
-    # Correct: redirect includes user context
     return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
 @app.get("/profile", response_class=HTMLResponse)
 def profile(request: Request, user: Optional[str] = None):
     with db() as conn:
         c = conn.cursor()
-        # Top 15 games for the week
         c.execute("SELECT game_id FROM games ORDER BY start_utc ASC LIMIT 15")
         top_game_ids = [row["game_id"] for row in c.fetchall()]
         if not top_game_ids:
