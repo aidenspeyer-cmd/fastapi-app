@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Leaderboard</h2>
+<table>
+<tr><th>User</th><th>Points</th></tr>
+{% for row in board %}
+<tr>
+    <td>{{ row.user }}{% if row.user == me %} (you){% endif %}</td>
+    <td>{{ row.points }}</td>
+</tr>
+{% else %}
+<tr><td colspan="2">No scored picks yet.</td></tr>
+{% endfor %}
+</table>
+<a href="/">Back to picks</a>
+{% endblock %}
