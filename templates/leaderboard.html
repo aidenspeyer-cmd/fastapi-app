@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="leaderboard-container">
+  <h2>Leaderboard</h2>
+  <a href="/games" class="nav">Back to Games</a>
+  {% if board and board|length > 0 %}
+    <table class="leaderboard-table">
+      <tr>
+        <th>User</th>
+        <th>Points</th>
+      </tr>
+      {% for row in board %}
+      <tr>
+        <td>{{ row["user"] }}</td>
+        <td>{{ row["correct"] }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No leaderboard data yet.</p>
+  {% endif %}
+</div>
+{% endblock %}
