@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="/submit">
+    <label>Your name</label>
+    <input name="user" required>
+    <textarea name="payload" placeholder="game_id|pick_winner|pick_total\none per line"></textarea>
+    <button type="submit">Submit Picks</button>
+</form>
+<ul>
+{% for g in games %}
+    <li>{{ g["short_name"] or (g["away_name"] ~ " @ " ~ g["home_name"]) }} | O/U: {{ "%.1f"|format(g["over_under"] or 0.0) }}</li>
+{% endfor %}
+</ul>
+<a href="/board">Leaderboard</a>
+{% endblock %}
