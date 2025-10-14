@@ -40,7 +40,33 @@ def init_db():
         """)
         # ... (users, picks, groups, etc. unchanged) ...
         # Ensure the rest of your tables are created here as well!
-        conn.commit()
+ 
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name TEXT UNIQUE,
+            access_code TEXT,
+            created_by TEXT
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER,
+            username TEXT,
+            joined_at TEXT,
+            PRIMARY KEY (group_id, username)
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS achievements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            badge TEXT,
+            awarded_at TEXT,
+            UNIQUE(username, badge)
+        );
+        """)
+conn.commit()
 
 init_db()
 
@@ -139,6 +165,17 @@ async def make_prediction(
                 pick_total=excluded.pick_total,
                 made_at=excluded.made_at
         """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
+        if current_streak >= 5:
+        c.execute(
+            "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
+            (user, "Streak5", datetime.utcnow().isoformat())
+        )
+    # Award a win% badge
+    if win_rate >= 80 and total_picks >= 10:
+        c.execute(
+            "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
+            (user, "Win80", datetime.utcnow().isoformat())
+        )
         conn.commit()
     return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
@@ -146,36 +183,49 @@ async def make_prediction(
 def profile(request: Request, user: Optional[str] = None):
     with db() as conn:
         c = conn.cursor()
-        # Fetch all picks for this user, latest first
+        # Fetch all picks for this user (oldest first, to calculate streak correctly)
         c.execute("""
-            SELECT p.*, g.short_name FROM picks p
+            SELECT p.*, g.short_name, g.final_home_score, g.final_away_score, g.over_under, g.is_final
+            FROM picks p
             LEFT JOIN games g ON g.game_id = p.game_id
             WHERE p.user=?
-            ORDER BY made_at ASC
+            ORDER BY p.made_at ASC
         """, (user,))
+        c.execute("SELECT badge FROM achievements WHERE username=?", (user,))
+        badges = [row["badge"] for row in c.fetchall()]
+# Pass `badges` to your template for display
         picks = c.fetchall()
-        
-        # Calculate stats
-        total_picks = len(picks)
+
+        total_picks = 0
         wins = 0
         streak = 0
-        last_pick_win = None
+        current_streak = 0
+        last_was_win = None
 
-        # You need logic for "correct prediction" — here, assume you know the real outcome and it's in picks table (expand as you add that info)
-        for pick in reversed(picks):  # latest first
-            # For demo: treat home winning as correct winner, or check against actual results if stored
-            actual_winner = "home"  # TODO: Replace with actual result for pick["game_id"]
-            actual_ou = "over"      # TODO: Replace with result logic
+        for pick in picks:
+            # Only count games that are final
+            if not pick["is_final"]:
+                continue
+            total_picks += 1
+            home = pick["final_home_score"]
+            away = pick["final_away_score"]
+            if home is None or away is None:
+                continue
+            actual_winner = "home" if home > away else "away"
+            total_points = (home or 0) + (away or 0)
+            ou_result = "over" if total_points > (pick["over_under"] or 0) else "under"
 
-            correct_pick = (pick["pick_winner"] == actual_winner) and (pick["pick_total"] == actual_ou)
-            if correct_pick:
+            correct = (pick["pick_winner"] == actual_winner) and (pick["pick_total"] == ou_result)
+            if correct:
                 wins += 1
-                if streak == 0 or last_pick_win:
-                    streak += 1
-                last_pick_win = True
+                if last_was_win or last_was_win is None:
+                    current_streak += 1
+                else:
+                    current_streak = 1
+                last_was_win = True
             else:
-                last_pick_win = False
-                streak = 0  # streak broken
+                last_was_win = False
+                current_streak = 0
 
         win_rate = int((wins / total_picks) * 100) if total_picks > 0 else 0
 
@@ -186,10 +236,41 @@ def profile(request: Request, user: Optional[str] = None):
             "user": user,
             "picks": picks,
             "win_rate": win_rate,
-            "current_streak": streak,  # Pass to template
-            # Add other variables for badges/achievements as you expand!
+            "current_streak": current_streak
         }
     )
+    import secrets
+
+@app.post("/groups/create")
+def create_group(request: Request, group_name: str = Form(...), user: str = "anonymous"):
+    access_code = secrets.token_hex(3)
+    with db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO groups (group_name, access_code, created_by) VALUES (?, ?, ?)",
+            (group_name, access_code, user)
+        )
+        group_id = c.lastrowid
+        c.execute(
+            "INSERT INTO group_members (group_id, username, joined_at) VALUES (?, ?, ?)",
+            (group_id, user, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+    return RedirectResponse(url="/groups", status_code=303)
+
+@app.get("/groups", response_class=HTMLResponse)
+def groups(request: Request, user: str = ""):
+    with db() as conn:
+        c = conn.cursor()
+        # Example: show all groups for the logged-in user
+        c.execute("""
+            SELECT g.* FROM groups g
+            JOIN group_members gm ON gm.group_id = g.group_id
+            WHERE gm.username = ?
+        """, (user,))
+        groups = c.fetchall()
+    return templates.TemplateResponse("groups.html", {"request": request, "groups": groups, "user": user})
+
 @app.get("/groups", response_class=HTMLResponse)
 def groups(request: Request):
     # Stub: Implement group logic here
