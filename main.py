@@ -85,7 +85,7 @@ def next_saturday(date: datetime) -> datetime:
     days_ahead = (5 - dow) % 7
     return date + timedelta(days=days_ahead)
 
-async def fetch_top25_for_week() -> List[dict]:
+async def fetch_top15_games_for_week() -> List[dict]:
     today = datetime.utcnow()
     sat = next_saturday(today)
     sun = sat + timedelta(days=1)
@@ -105,6 +105,20 @@ async def fetch_top25_for_week() -> List[dict]:
             away = next((c for c in comps if c.get("homeAway") == "away"), {})
             home_team = home.get("team", {})
             away_team = away.get("team", {})
+
+            # Try to get rank (as int) for each team; fallback to None if missing
+            home_rank = None
+            away_rank = None
+            try:
+                # Modern API: rank may be int directly or nested
+                home_rank = int(home_team.get("rank") or home_team.get("currentRank") or home_team.get("seed") or 0) or None
+            except Exception:
+                home_rank = None
+            try:
+                away_rank = int(away_team.get("rank") or away_team.get("currentRank") or away_team.get("seed") or 0) or None
+            except Exception:
+                away_rank = None
+
             over_under = None
             odds_list = comp.get("odds") or []
             if odds_list:
@@ -112,18 +126,21 @@ async def fetch_top25_for_week() -> List[dict]:
                     over_under = float(odds_list[0].get("overUnder"))
                 except (TypeError, ValueError):
                     over_under = None
-            games.append({
-                "game_id": gid,
-                "short_name": ev.get("shortName"),
-                "home_id": str(home_team.get("id")) if home_team else None,
-                "home_name": home_team.get("displayName") if home_team else None,
-                "away_id": str(away_team.get("id")) if away_team else None,
-                "away_name": away_team.get("displayName") if away_team else None,
-                "start_utc": comp.get("date"),
-                "over_under": over_under
-            })
-        # Return only the top 15 games
-        return games[:15]
+
+            # Only include if either team is ranked 1-15
+            if (home_rank and 1 <= home_rank <= 15) or (away_rank and 1 <= away_rank <= 15):
+                games.append({
+                    "game_id": gid,
+                    "short_name": ev.get("shortName"),
+                    "home_id": str(home_team.get("id")) if home_team else None,
+                    "home_name": home_team.get("displayName") if home_team else None,
+                    "away_id": str(away_team.get("id")) if away_team else None,
+                    "away_name": away_team.get("displayName") if away_team else None,
+                    "start_utc": comp.get("date"),
+                    "over_under": over_under
+                })
+        return games
+
 
 def upsert_games(games: List[dict]):
     with db() as conn:
