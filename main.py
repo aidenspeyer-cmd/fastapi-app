@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import sqlite3
+from typing import Optional
 import httpx
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,6 +22,7 @@ def db():
 def init_db():
     with db() as conn:
         c = conn.cursor()
+        # Games table
         c.execute("""
         CREATE TABLE IF NOT EXISTS games (
             game_id TEXT PRIMARY KEY,
@@ -31,30 +33,38 @@ def init_db():
             over_under REAL
         );
         """)
+        # Users table - can expand with more fields later
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            join_date TEXT
+        );
+        """)
+        # Picks table (now more detailed)
         c.execute("""
         CREATE TABLE IF NOT EXISTS picks (
-            user TEXT,
+            pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user TEXT,  -- Keep simple, username for now
             game_id TEXT,
-            pick_winner TEXT, -- 'home' or 'away'
-            pick_total TEXT, -- 'over' or 'under'
-            locked INTEGER DEFAULT 0,
-            line_ou_at_pick REAL,
-            created_at TEXT,
-            PRIMARY KEY (user, game_id),
+            pick_winner TEXT,
+            pick_total TEXT,
+            made_at TEXT,
+            UNIQUE(user, game_id),
             FOREIGN KEY (game_id) REFERENCES games(game_id)
         );
         """)
+        # Groups and group membership can be added here later
+
         conn.commit()
 init_db()
 
 def next_saturday(date: datetime) -> datetime:
-    # Saturday = 5
     dow = date.weekday()
     days_ahead = (5 - dow) % 7
     return date + timedelta(days=days_ahead)
 
 async def fetch_top25_for_week() -> list[dict]:
-    # ESPN defaults to Top-25 on this endpoint; we use Sat..Sun range
     today = datetime.utcnow()
     sat = next_saturday(today)
     sun = sat + timedelta(days=1)
@@ -114,110 +124,66 @@ def upsert_games(games: list[dict]):
             ))
         conn.commit()
 
-def is_locked(start_iso: str) -> bool:
-    try:
-        start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
-    except Exception:
-        return False
-    return datetime.utcnow() >= start
-
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def root(request: Request):
+    return RedirectResponse(url="/games")
+
+@app.get("/games", response_class=HTMLResponse)
+async def games(request: Request, user: Optional[str] = None):
     games = await fetch_top25_for_week()
     upsert_games(games)
-    with db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM games ORDER BY start_utc ASC")
-        rows = c.fetchall()
-    return templates.TemplateResponse("index.html", {"request": request, "games": rows})
+    return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
 
-@app.post("/submit")
-async def submit(
+@app.post("/predict")
+async def make_prediction(
+    request: Request,
     user: str = Form(...),
-    payload: str = Form(...)
+    game_id: str = Form(...),
+    winner: str = Form(...),
+    pick_total: str = Form(...)
 ):
-    lines = [l for l in payload.split("\n") if l.strip()]
     with db() as conn:
         c = conn.cursor()
-        for line in lines:
-            game_id, pick_winner, pick_total = line.split("|")
-            c.execute("SELECT start_utc, over_under FROM games WHERE game_id=?", (game_id,))
-            r = c.fetchone()
-            if not r:
-                continue
-            if is_locked(r["start_utc"]):
-                # skip late picks
-                continue
-            c.execute("""
-            INSERT INTO picks (user, game_id, pick_winner, pick_total, locked, line_ou_at_pick, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+        # Optional: insert user if not exists
+        c.execute("INSERT OR IGNORE INTO users (username, join_date) VALUES (?, ?)", (user, datetime.utcnow().isoformat()))
+        c.execute("""
+            INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(user, game_id) DO UPDATE SET
                 pick_winner=excluded.pick_winner,
                 pick_total=excluded.pick_total,
-                line_ou_at_pick=excluded.line_ou_at_pick
-            """, (
-                user.strip(), game_id, pick_winner, pick_total, 0, r["over_under"], datetime.utcnow().isoformat()
-            ))
+                made_at=excluded.made_at
+        """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
         conn.commit()
-    return RedirectResponse(url=f"/board?user={user}", status_code=303)
+    return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
-async def fetch_scores_and_totals_for_scoring(date_range: str) -> dict:
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
-        r.raise_for_status()
-        data = r.json()
-        out = {}
-        for ev in data.get("events", []):
-            gid = ev.get("id")
-            comp = (ev.get("competitions") or [{}])[0]
-            status = (comp.get("status") or {}).get("type", {})
-            completed = status.get("completed") is True
-            if not completed:
-                continue
-            total_points = 0
-            for team in comp.get("competitors", []):
-                try:
-                    total_points += int(team.get("score"))
-                except Exception:
-                    pass
-            winner_side = None
-            for team in comp.get("competitors", []):
-                if team.get("winner") is True:
-                    winner_side = team.get("homeAway")
-            out[gid] = {"total_points": total_points, "winner_side": winner_side}
-        return out
-
-@app.get("/board", response_class=HTMLResponse)
-async def leaderboard(request: Request, user: str = ""):
-    today = datetime.utcnow()
-    sat = next_saturday(today)
-    sun = sat + timedelta(days=1)
-    date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
-    finals = await fetch_scores_and_totals_for_scoring(date_range)
+@app.get("/profile", response_class=HTMLResponse)
+def profile(request: Request, user: Optional[str] = None):
     with db() as conn:
         c = conn.cursor()
-        c.execute("SELECT * FROM picks")
-        all_picks = c.fetchall()
-        points_by_user = {}
-        for p in all_picks:
-            gid = p["game_id"]
-            if gid not in finals:
-                continue
-            fin = finals[gid]
-            u = p["user"]
-            points_by_user.setdefault(u, 0)
-            if p["pick_winner"] == fin["winner_side"]:
-                points_by_user[u] += 1
-            ou_line = p["line_ou_at_pick"]
-            total_points = fin["total_points"]
-            if ou_line is None:
-                pass
-            elif p["pick_total"] == "over" and total_points > ou_line:
-                points_by_user[u] += 1
-            elif p["pick_total"] == "under" and total_points < ou_line:
-                points_by_user[u] += 1
-        board = sorted(
-            [{"user": u, "points": pts} for u, pts in points_by_user.items()],
-            key=lambda r: (-r["points"], r["user"].lower())
-        )
-    return templates.TemplateResponse("board.html", {"request": request, "board": board, "me": user})
+        c.execute("""
+            SELECT p.*, g.short_name FROM picks p
+            LEFT JOIN games g ON g.game_id = p.game_id
+            WHERE p.user=?
+            ORDER BY made_at DESC
+        """, (user,))
+        picks = c.fetchall()
+    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "picks": picks})
+
+@app.get("/groups", response_class=HTMLResponse)
+def groups(request: Request):
+    # Stub: Implement group logic here
+    return templates.TemplateResponse("groups.html", {"request": request})
+
+@app.get("/leaderboard", response_class=HTMLResponse)
+def leaderboard(request: Request):
+    # Stub: compute and show leaderboard across all users or by group
+    with db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT user, COUNT(*) as correct FROM picks
+            GROUP BY user
+            ORDER BY correct DESC
+        """)
+        board = c.fetchall()
+    return templates.TemplateResponse("leaderboard.html", {"request": request, "board": board})
