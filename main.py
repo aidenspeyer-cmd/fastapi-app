@@ -138,27 +138,16 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
             away = next((c for c in comps if c.get("homeAway") == "away"), {})
             home_team = home.get("team", {})
             away_team = away.get("team", {})
-            print("HOME TEAM FULL DICT:", json.dumps(home_team, indent=2))
-            print("AWAY TEAM FULL DICT:", json.dumps(away_team, indent=2))
-            break
 
-            # Debug prints for troubleshooting
-            print(f"\n--- GAME DEBUG ---")
-            print(f"Home team: {home_team.get('displayName')}")
-            print(f"  curatedRank: {home_team.get('curatedRank')}")
-            print(f"  rank: {home_team.get('rank')}")
-            print(f"  currentRank: {home_team.get('currentRank')}")
-            print(f"  seed: {home_team.get('seed')}")
-            print(f"  rankings: {home_team.get('rankings')}")
-            print(f"Away team: {away_team.get('displayName')}")
-            print(f"  curatedRank: {away_team.get('curatedRank')}")
-            print(f"  rank: {away_team.get('rank')}")
-            print(f"  currentRank: {away_team.get('currentRank')}")
-            print(f"  seed: {away_team.get('seed')}")
-            print(f"  rankings: {away_team.get('rankings')}")
-
-            home_rank = get_team_rank(home_team)
-            away_rank = get_team_rank(away_team)
+            # Rank is directly at the competitor level
+            try:
+                home_rank = int(home.get("rank")) if "rank" in home else None
+            except Exception:
+                home_rank = None
+            try:
+                away_rank = int(away.get("rank")) if "rank" in away else None
+            except Exception:
+                away_rank = None
 
             over_under = None
             odds_list = comp.get("odds") or []
@@ -168,7 +157,7 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
                 except (TypeError, ValueError):
                     over_under = None
 
-            # NEW: Only include games if at least one team is ranked in any position
+            # Only include games with at least one ranked team
             if (home_rank is not None) or (away_rank is not None):
                 games.append({
                     "game_id": gid,
