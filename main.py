@@ -386,3 +386,4 @@ async def admin_update_scores():
     date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
     await update_scores_with_finals(date_range)
     return {"status": "game results updated"}
+#hopefully this one works this time
