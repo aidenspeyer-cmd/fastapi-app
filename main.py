@@ -82,13 +82,13 @@ def init_db():
 init_db()
 
 def get_current_cf_week():
-    """Estimate week number from date (ESPN uses 1-indexed weeks)"""
-    season_start = datetime(2025, 8, 25) # adjust if season start shifts
+    """Estimate CFB week number for use in AP poll URL"""
+    season_start = datetime(2025, 8, 25) # adjust as needed
     today = datetime.utcnow()
     return max(1, ((today - season_start).days // 7) + 1)
 
 async def get_ap_top25_team_names():
-    """Scrape the ESPN AP poll for this week and return set of ranked team names."""
+    """Scrape the ESPN AP poll for this week and return set of ranked team names (pure regex)."""
     year = datetime.utcnow().year
     week = get_current_cf_week()
     url = ESPN_AP_POLL_BASE.format(week=week, year=year)
@@ -96,19 +96,26 @@ async def get_ap_top25_team_names():
         resp = await client.get(url)
         html = resp.text
 
-        # Only select teams that have an actual ranking (Top 25 table)
-        # Looks for table rows with <td>rank</td><td><a ...>TEAM NAME</a>
+        # Pure regex: find all ranked table rows with <td>rank</td> ... <a>Team Name</a>
         rows = re.findall(
-            r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>\s*<td[^>]*><a[^>]*>([^<]+)</a>',
-            html
+            r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>.*?<a[^>]*>([^<]+)</a>',
+            html,
+            re.DOTALL
         )
-        top25 = set(team for rank, team in rows if 1 <= int(rank) <= 25)
+        # Fallback: match <td>rank</td><td>Team name</td> (sometimes AP page uses plain text)
+        if not rows:
+            rows = re.findall(
+                r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>.*?<td[^>]*>([^<]+)</td>',
+                html,
+                re.DOTALL
+            )
+        top25 = set(team.strip() for rank, team in rows if rank.isdigit() and 1 <= int(rank) <= 25)
         print(f"Extracted Top 25 teams: {top25}")
         return top25
 
 def is_top25_team(name, top25_names):
     name_lc = name.lower()
-    return any(ap_team.lower() in name_lc for ap_team in top25_names)
+    return any(ap_team.lower() in name_lc or name_lc in ap_team.lower() for ap_team in top25_names)
 
 async def fetch_ap_top25_games_for_week():
     top25_names = await get_ap_top25_team_names()
@@ -134,7 +141,7 @@ async def fetch_ap_top25_games_for_week():
                 away_name = away.get("team", {}).get("displayName", "")
                 home_id = home.get("team", {}).get("id")
                 away_id = away.get("team", {}).get("id")
-                # Only display games with at least one AP Top 25 team (using substring match)
+                # Only display games with at least one AP Top 25 team
                 if not is_top25_team(home_name, top25_names) and not is_top25_team(away_name, top25_names):
                     continue
                 over_under = None
