@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-import sqlite3, secrets, httpx, asyncio, json
+import sqlite3, secrets, httpx, asyncio, json, re
 from typing import Optional, List
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -117,102 +117,72 @@ def get_team_rank(team_dict):
         except Exception:
             pass
     return None
-async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
-    """
-    Fetch college football games for the current week.
-    Keeps games that have at least one top-25 team based on:
-    - ESPN ranking fields (curatedRank, rankings list, etc.)
-    - Text patterns like "No. 7 Texas"
-    - Static known Top 25 fallback (useful when ESPN omits ranks midweek)
-    """
-    async with httpx.AsyncClient(timeout=20) as client:
-        today = datetime.utcnow()
-        monday = today - timedelta(days=today.weekday())
-        sunday = monday + timedelta(days=6)
-        date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
-        url = f"{ESPN_SCOREBOARD}?dates={date_range}"
+import re
+import httpx
+from datetime import datetime, timedelta
 
+ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
+
+async def fetch_games_with_ranked_teams_for_week():
+    today = datetime.utcnow()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+    date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
+
+    url = f"{ESPN_SCOREBOARD}?dates={date_range}"
+
+    async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url)
-        r.raise_for_status()
         data = r.json()
 
-    events = data.get("events", [])
     games = []
+    for event in data.get("events", []):
+        competition = event.get("competitions", [{}])[0]
+        competitors = competition.get("competitors", [])
 
-    # Fallback Top 25 (update weekly if needed)
-    known_top25 = {
-        "Georgia", "Michigan", "Ohio State", "Texas", "Oregon", "Penn State", "Alabama",
-        "Notre Dame", "Ole Miss", "Tennessee", "Utah", "Oklahoma", "LSU", "Missouri",
-        "Kansas State", "Florida State", "Clemson", "Washington", "North Carolina",
-        "Oklahoma State", "Miami", "Arizona", "Colorado", "Texas A&M", "Oregon State"
-    }
-
-    for ev in events:
-        try:
-            gid = ev.get("id")
-            comp = (ev.get("competitions") or [{}])[0]
-            comps = comp.get("competitors", [])
-            home = next((c for c in comps if c.get("homeAway") == "home"), {})
-            away = next((c for c in comps if c.get("homeAway") == "away"), {})
-
-            home_team = home.get("team", {})
-            away_team = away.get("team", {})
-
-            home_name = home_team.get("displayName", "")
-            away_name = away_team.get("displayName", "")
-
-            # Try all ranking extraction methods
-            home_rank = get_team_rank(home_team)
-            away_rank = get_team_rank(away_team)
-
-            # Text-based rank detection
-            import re
-            def rank_from_name(name):
-                m = re.search(r"No\.\s*(\d+)", name)
-                return int(m.group(1)) if m else None
-
-            if home_rank is None:
-                home_rank = rank_from_name(home_name)
-            if away_rank is None:
-                away_rank = rank_from_name(away_name)
-
-            # Fallback: check if team is known Top 25
-            home_is_ranked = (
-                (home_rank is not None and 1 <= home_rank <= 25)
-                or any(t in home_name for t in known_top25)
-            )
-            away_is_ranked = (
-                (away_rank is not None and 1 <= away_rank <= 25)
-                or any(t in away_name for t in known_top25)
-            )
-
-            over_under = None
-            odds_list = comp.get("odds") or []
-            if odds_list:
-                try:
-                    over_under = float(odds_list[0].get("overUnder"))
-                except (TypeError, ValueError):
-                    pass
-
-            # Keep if either team is ranked
-            if home_is_ranked or away_is_ranked:
-                games.append({
-                    "game_id": gid,
-                    "short_name": ev.get("shortName"),
-                    "home_id": str(home_team.get("id")) if home_team else None,
-                    "home_name": home_name,
-                    "away_id": str(away_team.get("id")) if away_team else None,
-                    "away_name": away_name,
-                    "start_utc": comp.get("date"),
-                    "over_under": over_under
-                })
-
-        except Exception as e:
-            print(f"Error parsing game: {e}")
+        if len(competitors) < 2:
             continue
 
-    print(f"✅ Found {len(games)} ranked games this week.")
+        home_team = competitors[0]["team"]
+        away_team = competitors[1]["team"]
+
+        def get_rank(team):
+            # Try curatedRank
+            rank = team.get("curatedRank", {}).get("current")
+            if rank and 1 <= rank <= 25:
+                return rank
+
+            # Try "rankings" list
+            for r in team.get("rankings", []):
+                if r.get("type", "").lower() in ["ap", "cfp", "coaches"]:
+                    rank_val = r.get("rank")
+                    if rank_val and 1 <= rank_val <= 25:
+                        return rank_val
+
+            # Try "No. X" text pattern
+            match = re.search(r"No\.\s*(\d{1,2})", team.get("displayName", ""))
+            if match:
+                rank_val = int(match.group(1))
+                if 1 <= rank_val <= 25:
+                    return rank_val
+
+            return None
+
+        home_rank = get_rank(home_team)
+        away_rank = get_rank(away_team)
+
+        if home_rank or away_rank:
+            games.append({
+                "matchup": f"{away_team['displayName']} @ {home_team['displayName']}",
+                "home_rank": home_rank,
+                "away_rank": away_rank,
+                "start_time": competition.get("date")
+            })
+
+    # Sort by start time
+    games.sort(key=lambda g: g["start_time"] or "")
     return games
+
 
 def upsert_games(games: List[dict]):
     with db() as conn:
