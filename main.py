@@ -119,18 +119,33 @@ def get_team_rank(team_dict):
     return None
 async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
     """
-    Fetches college football games from the current ESPN scoreboard,
-    keeping only those with at least one Top-25 ranked team.
-    Works reliably even when ESPN changes JSON structures slightly.
+    Fetch college football games for the current week.
+    Keeps games that have at least one top-25 team based on:
+    - ESPN ranking fields (curatedRank, rankings list, etc.)
+    - Text patterns like "No. 7 Texas"
+    - Static known Top 25 fallback (useful when ESPN omits ranks midweek)
     """
     async with httpx.AsyncClient(timeout=20) as client:
-        # Use the base scoreboard (auto handles current week)
-        r = await client.get(ESPN_SCOREBOARD)
+        today = datetime.utcnow()
+        monday = today - timedelta(days=today.weekday())
+        sunday = monday + timedelta(days=6)
+        date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
+        url = f"{ESPN_SCOREBOARD}?dates={date_range}"
+
+        r = await client.get(url)
         r.raise_for_status()
         data = r.json()
 
     events = data.get("events", [])
     games = []
+
+    # Fallback Top 25 (update weekly if needed)
+    known_top25 = {
+        "Georgia", "Michigan", "Ohio State", "Texas", "Oregon", "Penn State", "Alabama",
+        "Notre Dame", "Ole Miss", "Tennessee", "Utah", "Oklahoma", "LSU", "Missouri",
+        "Kansas State", "Florida State", "Clemson", "Washington", "North Carolina",
+        "Oklahoma State", "Miami", "Arizona", "Colorado", "Texas A&M", "Oregon State"
+    }
 
     for ev in events:
         try:
@@ -143,49 +158,51 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
             home_team = home.get("team", {})
             away_team = away.get("team", {})
 
-            # Attempt to find rank in multiple places
+            home_name = home_team.get("displayName", "")
+            away_name = away_team.get("displayName", "")
+
+            # Try all ranking extraction methods
             home_rank = get_team_rank(home_team)
             away_rank = get_team_rank(away_team)
 
-            # Fallback: detect "No. XX" in display name
-            def detect_rank_from_name(name: str):
-                if not name:
-                    return None
-                import re
-                match = re.search(r"No\.\s*(\d+)", name)
-                if match:
-                    try:
-                        return int(match.group(1))
-                    except ValueError:
-                        return None
-                return None
+            # Text-based rank detection
+            import re
+            def rank_from_name(name):
+                m = re.search(r"No\.\s*(\d+)", name)
+                return int(m.group(1)) if m else None
 
             if home_rank is None:
-                home_rank = detect_rank_from_name(home_team.get("displayName", ""))
+                home_rank = rank_from_name(home_name)
             if away_rank is None:
-                away_rank = detect_rank_from_name(away_team.get("displayName", ""))
+                away_rank = rank_from_name(away_name)
 
-            # Extract over/under if available
+            # Fallback: check if team is known Top 25
+            home_is_ranked = (
+                (home_rank is not None and 1 <= home_rank <= 25)
+                or any(t in home_name for t in known_top25)
+            )
+            away_is_ranked = (
+                (away_rank is not None and 1 <= away_rank <= 25)
+                or any(t in away_name for t in known_top25)
+            )
+
             over_under = None
             odds_list = comp.get("odds") or []
             if odds_list:
                 try:
                     over_under = float(odds_list[0].get("overUnder"))
                 except (TypeError, ValueError):
-                    over_under = None
+                    pass
 
-            # Only include games with a ranked team
-            if (
-                (home_rank is not None and 1 <= home_rank <= 25)
-                or (away_rank is not None and 1 <= away_rank <= 25)
-            ):
+            # Keep if either team is ranked
+            if home_is_ranked or away_is_ranked:
                 games.append({
                     "game_id": gid,
                     "short_name": ev.get("shortName"),
                     "home_id": str(home_team.get("id")) if home_team else None,
-                    "home_name": home_team.get("displayName"),
+                    "home_name": home_name,
                     "away_id": str(away_team.get("id")) if away_team else None,
-                    "away_name": away_team.get("displayName"),
+                    "away_name": away_name,
                     "start_utc": comp.get("date"),
                     "over_under": over_under
                 })
@@ -194,6 +211,7 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
             print(f"Error parsing game: {e}")
             continue
 
+    print(f"✅ Found {len(games)} ranked games this week.")
     return games
 
 def upsert_games(games: List[dict]):
