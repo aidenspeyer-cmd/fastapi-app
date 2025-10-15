@@ -133,11 +133,17 @@ def register_get(request: Request):
 
 @app.post("/register", response_class=HTMLResponse)
 def register_post(request: Request, username: str = Form(...), password: str = Form(...)):
+    password = password.strip()
+    if not (8 <= len(password) <= 72):
+        return templates.TemplateResponse("register.html", {"request": request, "error": "Password must be 8-72 characters (no leading/trailing spaces)."})
     hashed = get_password_hash(password)
     with db() as conn:
         c = conn.cursor()
         try:
-            c.execute("INSERT INTO users (username, password, join_date) VALUES (?, ?, ?)", (username, hashed, datetime.utcnow().isoformat()))
+            c.execute(
+                "INSERT INTO users (username, password, join_date) VALUES (?, ?, ?)", 
+                (username, hashed, datetime.utcnow().isoformat())
+            )
             conn.commit()
             token = create_access_token(username)
             resp = RedirectResponse(url="/games", status_code=303)
@@ -145,6 +151,7 @@ def register_post(request: Request, username: str = Form(...), password: str = F
             return resp
         except sqlite3.IntegrityError:
             return templates.TemplateResponse("register.html", {"request": request, "error": "Username taken."})
+
 
 @app.get("/logout")
 def logout():
