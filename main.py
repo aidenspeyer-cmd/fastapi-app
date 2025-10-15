@@ -117,34 +117,55 @@ def get_team_rank(team_dict):
         except Exception:
             pass
     return None
-
 async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
-    today = datetime.utcnow()
-    # EXPAND THE SEARCH TO FRI-SUN (you can change days as desired)
-    sat = next_saturday(today)
-    fri = sat - timedelta(days=1)
-    sun = sat + timedelta(days=1)
-    date_range = f"{fri.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
-    url = f"{ESPN_SCOREBOARD}?dates={date_range}"
+    """
+    Fetches college football games from the current ESPN scoreboard,
+    keeping only those with at least one Top-25 ranked team.
+    Works reliably even when ESPN changes JSON structures slightly.
+    """
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(url)
+        # Use the base scoreboard (auto handles current week)
+        r = await client.get(ESPN_SCOREBOARD)
         r.raise_for_status()
         data = r.json()
-        events = data.get("events", [])
-        games = []
-        for ev in events:
+
+    events = data.get("events", [])
+    games = []
+
+    for ev in events:
+        try:
             gid = ev.get("id")
             comp = (ev.get("competitions") or [{}])[0]
             comps = comp.get("competitors", [])
             home = next((c for c in comps if c.get("homeAway") == "home"), {})
             away = next((c for c in comps if c.get("homeAway") == "away"), {})
+
             home_team = home.get("team", {})
             away_team = away.get("team", {})
 
-            # Use robust get_team_rank instead of c.get("rank")
+            # Attempt to find rank in multiple places
             home_rank = get_team_rank(home_team)
             away_rank = get_team_rank(away_team)
 
+            # Fallback: detect "No. XX" in display name
+            def detect_rank_from_name(name: str):
+                if not name:
+                    return None
+                import re
+                match = re.search(r"No\.\s*(\d+)", name)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except ValueError:
+                        return None
+                return None
+
+            if home_rank is None:
+                home_rank = detect_rank_from_name(home_team.get("displayName", ""))
+            if away_rank is None:
+                away_rank = detect_rank_from_name(away_team.get("displayName", ""))
+
+            # Extract over/under if available
             over_under = None
             odds_list = comp.get("odds") or []
             if odds_list:
@@ -153,22 +174,27 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
                 except (TypeError, ValueError):
                     over_under = None
 
-            # Only include games with at least one ranked team in top 25
+            # Only include games with a ranked team
             if (
-                (home_rank is not None and 1 <= home_rank <= 25) or
-                (away_rank is not None and 1 <= away_rank <= 25)
+                (home_rank is not None and 1 <= home_rank <= 25)
+                or (away_rank is not None and 1 <= away_rank <= 25)
             ):
                 games.append({
                     "game_id": gid,
                     "short_name": ev.get("shortName"),
                     "home_id": str(home_team.get("id")) if home_team else None,
-                    "home_name": home_team.get("displayName") if home_team else None,
+                    "home_name": home_team.get("displayName"),
                     "away_id": str(away_team.get("id")) if away_team else None,
-                    "away_name": away_team.get("displayName") if away_team else None,
+                    "away_name": away_team.get("displayName"),
                     "start_utc": comp.get("date"),
                     "over_under": over_under
                 })
-        return games
+
+        except Exception as e:
+            print(f"Error parsing game: {e}")
+            continue
+
+    return games
 
 def upsert_games(games: List[dict]):
     with db() as conn:
