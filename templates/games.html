@@ -1,21 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
+{% extends "base.html" %}
+{% block content %}
 <div class="games-list">
+
   {% if user %}
     <div class="user-banner">
       <strong>Welcome, {{ user }}!</strong>
       <a href="/profile?user={{ user }}" class="nav">My Predictions</a>
     </div>
-  {% else %}
-    <form method="get" action="/games">
-      <label for="user">Enter your username to start:</label>
-      <input type="text" name="user" id="user" required>
-      <button type="submit">Go</button>
-    </form>
-    <br>
   {% endif %}
 
+  <!-- Unpicked Games -->
   {% if games %}
+    <h2>Games You Can Pick:</h2>
     {% for g in games %}
       <div class="game-card">
         <h2>{{ g["short_name"] }}</h2>
@@ -23,32 +21,53 @@
         <p>Kickoff: {{ g["start_utc"] }}</p>
         <p>O/U: <span class="lime">{{ "%.1f"|format(g["over_under"] or 0.0) }}</span></p>
         {% if user %}
-        <form method="post" action="/predict" class="pred-form">
-          <input type="hidden" name="user" value="{{ user }}">
-          <input type="hidden" name="game_id" value="{{ g['game_id'] }}">
-          <div>
-            <label>
-              <input type="radio" name="winner" value="home" required> {{ g["home_name"] }}
-            </label>
-            <label>
-              <input type="radio" name="winner" value="away"> {{ g["away_name"] }}
-            </label>
-          </div>
-          <div>
-            <label>
-              <select name="pick_total">
-                <option value="over">Over</option>
-                <option value="under">Under</option>
-              </select>
-            </label>
-          </div>
-          <button class="lime" type="submit">Predict!</button>
-        </form>
+          <form method="post" action="/predict" class="pred-form">
+            <input type="hidden" name="user" value="{{ user }}">
+            <input type="hidden" name="game_id" value="{{ g['game_id'] }}">
+            <div>
+              <label>
+                <input type="radio" name="winner" value="home" required> {{ g["home_name"] }}
+              </label>
+              <label>
+                <input type="radio" name="winner" value="away"> {{ g["away_name"] }}
+              </label>
+            </div>
+            <div>
+              <label>
+                <select name="pick_total">
+                  <option value="over">Over</option>
+                  <option value="under">Under</option>
+                </select>
+              </label>
+            </div>
+            <button class="lime" type="submit">Predict!</button>
+          </form>
         {% endif %}
       </div>
     {% endfor %}
-  {% else %}
+  {% endif %}
+
+  <!-- Already Picked Games -->
+  {% if picked_games %}
+    <h2>Your Picks (Already Picked):</h2>
+    {% for g in picked_games %}
+      <div class="game-card picked">
+        <h2>{{ g["short_name"] }}</h2>
+        <p>{{ g["away_name"] }} @ {{ g["home_name"] }}</p>
+        <p>Kickoff: {{ g["start_utc"] }}</p>
+        <p>O/U: <span class="lime">{{ "%.1f"|format(g["over_under"] or 0.0) }}</span></p>
+        <p>
+          <strong>Your Pick:</strong>
+          Winner: <span class="lime">{{ g["pick_winner"]|capitalize }}</span>,
+          O/U: <span class="lime">{{ g["pick_total"]|capitalize }}</span>
+        </p>
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  {% if not games and not picked_games %}
     <div>No games available yet. Try later!</div>
   {% endif %}
+
 </div>
 {% endblock %}
