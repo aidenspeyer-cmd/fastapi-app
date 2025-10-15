@@ -14,6 +14,7 @@ DB = "picks.db"
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
 ESPN_TEAMS = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams"
 
+def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     return conn
