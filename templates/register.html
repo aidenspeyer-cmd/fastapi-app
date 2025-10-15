@@ -6,7 +6,7 @@
 {% if error %}<p style="color:red;">{{error}}</p>{% endif %}
 <form method="post">
   <label>Username: <input name="username" required></label><br>
-  <label>Password: <input type="password" name="password" required></label><br>
+  <label>Password: <input type="password" name="password" minlength="8" maxlength="72" required></label><br>
   <button type="submit">Create Account</button>
 </form>
 <p>Already have an account? <a href="/login">Login</a></p>
