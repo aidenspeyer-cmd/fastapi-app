@@ -12,6 +12,7 @@ templates = Jinja2Templates(directory="templates")
 
 DB = "picks.db"
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
+ESPN_RANKINGS = "https://site.web.api.espn.com/apis/v2/sports/football/college-football/rankings"
 
 def db():
     conn = sqlite3.connect(DB)
@@ -117,72 +118,46 @@ def get_team_rank(team_dict):
         except Exception:
             pass
     return None
-import re
-import httpx
-from datetime import datetime, timedelta
-
-ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
-
 async def fetch_games_with_ranked_teams_for_week():
     today = datetime.utcnow()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
-
     url = f"{ESPN_SCOREBOARD}?dates={date_range}"
 
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(url)
-        data = r.json()
+        # Get scoreboard
+        scoreboard_data = (await client.get(url)).json()
+        # Get rankings
+        rankings_data = (await client.get(ESPN_RANKINGS)).json()
+
+    # Extract AP Top 25 team names
+    ranked_teams = set()
+    try:
+        ap_poll = next(r for r in rankings_data["rankings"] if r["name"] == "Associated Press College Football Poll")
+        for team in ap_poll["ranks"]:
+            ranked_teams.add(team["team"]["displayName"])
+    except Exception:
+        pass
 
     games = []
-    for event in data.get("events", []):
-        competition = event.get("competitions", [{}])[0]
-        competitors = competition.get("competitors", [])
-
-        if len(competitors) < 2:
+    for event in scoreboard_data.get("events", []):
+        comp = event.get("competitions", [{}])[0]
+        teams = [t["team"] for t in comp.get("competitors", [])]
+        if len(teams) < 2:
             continue
 
-        home_team = competitors[0]["team"]
-        away_team = competitors[1]["team"]
+        home, away = teams[0], teams[1]
 
-        def get_rank(team):
-            # Try curatedRank
-            rank = team.get("curatedRank", {}).get("current")
-            if rank and 1 <= rank <= 25:
-                return rank
-
-            # Try "rankings" list
-            for r in team.get("rankings", []):
-                if r.get("type", "").lower() in ["ap", "cfp", "coaches"]:
-                    rank_val = r.get("rank")
-                    if rank_val and 1 <= rank_val <= 25:
-                        return rank_val
-
-            # Try "No. X" text pattern
-            match = re.search(r"No\.\s*(\d{1,2})", team.get("displayName", ""))
-            if match:
-                rank_val = int(match.group(1))
-                if 1 <= rank_val <= 25:
-                    return rank_val
-
-            return None
-
-        home_rank = get_rank(home_team)
-        away_rank = get_rank(away_team)
-
-        if home_rank or away_rank:
+        # If either team appears in Top 25 list, include the matchup
+        if home["displayName"] in ranked_teams or away["displayName"] in ranked_teams:
             games.append({
-                "matchup": f"{away_team['displayName']} @ {home_team['displayName']}",
-                "home_rank": home_rank,
-                "away_rank": away_rank,
-                "start_time": competition.get("date")
+                "matchup": f"{away['displayName']} @ {home['displayName']}",
+                "start_time": comp.get("date")
             })
 
-    # Sort by start time
     games.sort(key=lambda g: g["start_time"] or "")
     return games
-
 
 def upsert_games(games: List[dict]):
     with db() as conn:
