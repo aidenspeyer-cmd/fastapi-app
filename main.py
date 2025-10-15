@@ -12,9 +12,8 @@ templates = Jinja2Templates(directory="templates")
 
 DB = "picks.db"
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
-ESPN_RANKINGS = "https://site.web.api.espn.com/apis/v2/sports/football/college-football/rankings"
+ESPN_TEAMS = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams"
 
-def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     return conn
@@ -123,42 +122,63 @@ async def fetch_games_with_ranked_teams_for_week():
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
-    url = f"{ESPN_SCOREBOARD}?dates={date_range}"
 
     async with httpx.AsyncClient(timeout=20) as client:
-        # Get scoreboard
-        scoreboard_data = (await client.get(url)).json()
-        # Get rankings
-        rankings_data = (await client.get(ESPN_RANKINGS)).json()
+        # Fetch current week’s games
+        scoreboard_resp = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
+        scoreboard_data = scoreboard_resp.json()
 
-    # Extract AP Top 25 team names
-    ranked_teams = set()
-    try:
-        ap_poll = next(r for r in rankings_data["rankings"] if r["name"] == "Associated Press College Football Poll")
-        for team in ap_poll["ranks"]:
-            ranked_teams.add(team["team"]["displayName"])
-    except Exception:
-        pass
+        # Fetch all FBS teams and extract ranks
+        teams_resp = await client.get(ESPN_TEAMS)
+        teams_data = teams_resp.json()
+        ranked_teams = set()
+        for item in teams_data.get("sports", [])[0].get("leagues", [])[0].get("teams", []):
+            team = item.get("team", {})
+            rank_info = team.get("rankings", []) or team.get("curatedRank")
+            rank = None
+            if isinstance(rank_info, list) and rank_info:
+                rank = rank_info[0].get("rank")
+            elif isinstance(rank_info, dict):
+                rank = rank_info.get("current")
 
+            try:
+                rank = int(rank)
+                if 1 <= rank <= 25:
+                    ranked_teams.add(team.get("displayName"))
+            except Exception:
+                continue
+
+    # Filter games
     games = []
-    for event in scoreboard_data.get("events", []):
-        comp = event.get("competitions", [{}])[0]
-        teams = [t["team"] for t in comp.get("competitors", [])]
-        if len(teams) < 2:
+    for ev in scoreboard_data.get("events", []):
+        comp = (ev.get("competitions") or [{}])[0]
+        comps = comp.get("competitors", [])
+        if len(comps) != 2:
             continue
+        home = next((c for c in comps if c.get("homeAway") == "home"), {})
+        away = next((c for c in comps if c.get("homeAway") == "away"), {})
+        home_team = home.get("team", {}).get("displayName")
+        away_team = away.get("team", {}).get("displayName")
 
-        home, away = teams[0], teams[1]
+        if home_team in ranked_teams or away_team in ranked_teams:
+            over_under = None
+            odds_list = comp.get("odds") or []
+            if odds_list:
+                try:
+                    over_under = float(odds_list[0].get("overUnder"))
+                except (TypeError, ValueError):
+                    pass
 
-        # If either team appears in Top 25 list, include the matchup
-        if home["displayName"] in ranked_teams or away["displayName"] in ranked_teams:
             games.append({
-                "matchup": f"{away['displayName']} @ {home['displayName']}",
-                "start_time": comp.get("date")
+                "game_id": ev.get("id"),
+                "short_name": ev.get("shortName"),
+                "home_name": home_team,
+                "away_name": away_team,
+                "start_utc": comp.get("date"),
+                "over_under": over_under
             })
 
-    games.sort(key=lambda g: g["start_time"] or "")
     return games
-
 def upsert_games(games: List[dict]):
     with db() as conn:
         c = conn.cursor()
