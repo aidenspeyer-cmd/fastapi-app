@@ -152,33 +152,33 @@ async def fetch_games_with_ranked_teams_for_week():
     # Filter games
     games = []
     for ev in events:
-    comp = (ev.get("competitions") or [{}])[0]
-    comps = comp.get("competitors", [])
+        comp = (ev.get("competitions") or [{}])[0]
+        comps = comp.get("competitors", [])
 
-    # Log all teams and what get_rank() returns
-    for c in comps:
-        team = c.get("team", {})
-        name = team.get("displayName")
-        rank = get_rank(team)
-        print("Team:", name, "→ get_rank:", rank)
+        # Log all teams and what get_rank() returns
+        for c in comps:
+            team = c.get("team", {})
+            name = team.get("displayName")
+            rank = get_rank(team)
+            print("Team:", name, "→ get_rank:", rank)
 
-    # Now continue with your main logic
-    if len(comps) != 2:
-        continue
+        # Now continue with your main logic
+        if len(comps) != 2:
+            continue
 
-    home = next((c for c in comps if c.get("homeAway") == "home"), {})
-    away = next((c for c in comps if c.get("homeAway") == "away"), {})
-    home_team = home.get("team", {}).get("displayName")
-    away_team = away.get("team", {}).get("displayName")
+        home = next((c for c in comps if c.get("homeAway") == "home"), {})
+        away = next((c for c in comps if c.get("homeAway") == "away"), {})
+        home_team = home.get("team", {}).get("displayName")
+        away_team = away.get("team", {}).get("displayName")
 
-    if home_team in ranked_teams or away_team in ranked_teams:
-        over_under = None
-        odds_list = comp.get("odds") or []
-        if odds_list:
-            try:
-                over_under = float(odds_list[0].get("overUnder"))
-            except (TypeError, ValueError):
-                pass
+        if home_team in ranked_teams or away_team in ranked_teams:
+            over_under = None
+            odds_list = comp.get("odds") or []
+            if odds_list:
+                try:
+                    over_under = float(odds_list[0].get("overUnder"))
+                except (TypeError, ValueError):
+                    pass
 
 
             games.append({
