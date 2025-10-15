@@ -3,5 +3,6 @@ uvicorn[standard]
 httpx
 jinja2
 python-multipart
-passlib[bcrypt]
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.2
 python-jose
