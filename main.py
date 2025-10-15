@@ -1,15 +1,15 @@
 from datetime import datetime, timedelta
 import sqlite3, secrets, httpx, re
 from typing import Optional, List
-from fastapi import FastAPI, Request, Form, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Form, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-# --- Config for JWT ---
-SECRET_KEY = "super-secret-key"  # Set to a random secret string for production!
+# JWT config
+SECRET_KEY = "super-secret-key"  # CHANGE THIS for production!
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -29,10 +29,63 @@ def db():
 def init_db():
     with db() as conn:
         c = conn.cursor()
-        c.execute(
-            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, join_date TEXT);"
-        )
-        # ... leave your other create-table cmds as is ...
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS games (
+            game_id TEXT PRIMARY KEY,
+            short_name TEXT,
+            home_id TEXT, home_name TEXT,
+            away_id TEXT, away_name TEXT,
+            start_utc TEXT,
+            over_under REAL,
+            final_home_score INTEGER,
+            final_away_score INTEGER,
+            is_final BOOLEAN DEFAULT 0
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            join_date TEXT
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS picks (
+            pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user TEXT,
+            game_id TEXT,
+            pick_winner TEXT,
+            pick_total TEXT,
+            made_at TEXT,
+            UNIQUE(user, game_id)
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name TEXT UNIQUE,
+            access_code TEXT,
+            created_by TEXT
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER,
+            username TEXT,
+            joined_at TEXT,
+            PRIMARY KEY (group_id, username)
+        );
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS achievements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            badge TEXT,
+            awarded_at TEXT,
+            UNIQUE(username, badge)
+        );
+        """)
         conn.commit()
 init_db()
 
@@ -99,13 +152,16 @@ def logout():
     resp.delete_cookie("access_token")
     return resp
 
-# Update routes to require login: sample for games route—
+# ---------- Begin protected routes ----------
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    return RedirectResponse(url="/games")
+
 @app.get("/games", response_class=HTMLResponse)
 async def games(request: Request):
     user = get_current_user(request)
     if not user:
         return RedirectResponse("/login")
-    # ... rest of your code, use 'user' variable as before ...
     games = await fetch_ap_top25_games_for_week()
     upsert_games(games)
     with db() as conn:
@@ -114,3 +170,171 @@ async def games(request: Request):
         picked_game_ids = {row["game_id"] for row in c.fetchall()}
     games = [g for g in games if g["game_id"] not in picked_game_ids]
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
+
+@app.post("/predict")
+async def make_prediction(
+    request: Request,
+    game_id: str = Form(...),
+    winner: str = Form(...),
+    pick_total: str = Form(...)
+):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    with db() as conn:
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO users (username, password, join_date) VALUES (?, ?, ?, ?)", (user, "", datetime.utcnow().isoformat())) # Password left blank if user not registered (but this should never happen now)
+        try:
+            c.execute("""
+                INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user, game_id, winner, pick_total, datetime.utcnow().isoformat()))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
+    return RedirectResponse(url=f"/games", status_code=303)
+
+@app.get("/profile", response_class=HTMLResponse)
+def profile(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    with db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT game_id FROM games ORDER BY start_utc ASC LIMIT 15")
+        top_game_ids = [row["game_id"] for row in c.fetchall()]
+        if not top_game_ids:
+            picks = []
+        else:
+            qmarks = ",".join("?" for _ in top_game_ids)
+            query = f"""
+                SELECT p.*, g.short_name, g.final_home_score, g.final_away_score, g.over_under, g.is_final
+                FROM picks p
+                LEFT JOIN games g ON g.game_id = p.game_id
+                WHERE p.user=? AND p.game_id IN ({qmarks})
+                ORDER BY p.made_at ASC
+            """
+            params = [user] + top_game_ids
+            c.execute(query, params)
+            picks = c.fetchall()
+
+        total_picks = 0
+        wins = 0
+        current_streak = 0
+        last_was_win = None
+
+        for pick in picks:
+            if not pick["is_final"]:
+                continue
+            total_picks += 1
+            home = pick["final_home_score"]
+            away = pick["final_away_score"]
+            if home is None or away is None:
+                continue
+            actual_winner = "home" if home > away else "away"
+            total_points = (home or 0) + (away or 0)
+            ou_result = "over" if total_points > (pick["over_under"] or 0) else "under"
+
+            correct = (pick["pick_winner"] == actual_winner) and (pick["pick_total"] == ou_result)
+            if correct:
+                wins += 1
+                if last_was_win or last_was_win is None:
+                    current_streak += 1
+                else:
+                    current_streak = 1
+                last_was_win = True
+            else:
+                last_was_win = False
+                current_streak = 0
+
+        win_rate = int((wins / total_picks) * 100) if total_picks > 0 else 0
+
+        badges = []
+        if current_streak >= 5:
+            c.execute(
+                "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
+                (user, "Streak5", datetime.utcnow().isoformat())
+            )
+            badges.append("Streak5")
+        if win_rate >= 80 and total_picks >= 10:
+            c.execute(
+                "INSERT OR IGNORE INTO achievements (username, badge, awarded_at) VALUES (?, ?, ?)",
+                (user, "Win80", datetime.utcnow().isoformat())
+            )
+            badges.append("Win80")
+        c.execute("SELECT badge FROM achievements WHERE username=?", (user,))
+        badges += [row["badge"] for row in c.fetchall() if row["badge"] not in badges]
+
+    return templates.TemplateResponse(
+        "profile.html",
+        {
+            "request": request,
+            "user": user,
+            "picks": picks,
+            "win_rate": win_rate,
+            "current_streak": current_streak,
+            "badges": badges
+        }
+    )
+
+@app.get("/groups", response_class=HTMLResponse)
+def groups(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    with db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT g.* FROM groups g
+            JOIN group_members gm ON gm.group_id = g.group_id
+            WHERE gm.username = ?
+        """, (user,))
+        groups = c.fetchall()
+    return templates.TemplateResponse("groups.html", {"request": request, "groups": groups, "user": user})
+
+@app.post("/groups/create")
+def create_group(request: Request, group_name: str = Form(...)):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    access_code = secrets.token_hex(3)
+    with db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO groups (group_name, access_code, created_by) VALUES (?, ?, ?)",
+            (group_name, access_code, user)
+        )
+        group_id = c.lastrowid
+        c.execute(
+            "INSERT INTO group_members (group_id, username, joined_at) VALUES (?, ?, ?)",
+            (group_id, user, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+    return RedirectResponse(url="/groups", status_code=303)
+
+@app.get("/leaderboard", response_class=HTMLResponse)
+def leaderboard(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    with db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT p.user, COUNT(*) as correct FROM picks p
+            JOIN games g ON g.game_id = p.game_id
+            WHERE g.is_final = 1
+            AND ((p.pick_winner = CASE WHEN g.final_home_score > g.final_away_score THEN 'home' ELSE 'away' END)
+                 AND (p.pick_total = CASE WHEN g.final_home_score + g.final_away_score > g.over_under THEN 'over' ELSE 'under' END))
+            GROUP BY p.user
+            ORDER BY correct DESC
+        """)
+        board = c.fetchall()
+    return templates.TemplateResponse("leaderboard.html", {"request": request, "board": board})
+
+@app.post("/admin/update_scores")
+async def admin_update_scores():
+    # ... as before, admin-only route: consider further protection
+    today = datetime.utcnow()
+    sat = next_saturday(today)
+    sun = sat + timedelta(days=1)
+    date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
