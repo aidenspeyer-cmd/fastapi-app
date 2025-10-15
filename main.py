@@ -137,24 +137,27 @@ def register_get(request: Request):
 @app.post("/register", response_class=HTMLResponse)
 def register_post(request: Request, username: str = Form(...), password: str = Form(...)):
     password = password.strip()
-    password_bytes = password.encode('utf-8')
+    try:
+        password_bytes = password.encode('utf-8')
+    except Exception as e:
+        return templates.TemplateResponse("register.html", {"request": request, "error": f"Password encoding error: {str(e)}"})
     if not (8 <= len(password_bytes) <= 72):
         return templates.TemplateResponse(
-            "register.html", 
-            {"request": request, "error": "Password must be 8-72 bytes (ASCII or simple Unicode recommended)."}
+            "register.html",
+            {"request": request, "error": "Password must be 8–72 bytes (ASCII is safest, no emojis/special characters)."}
         )
     try:
-        hashed = get_password_hash(password)
+        hashed = get_password_hash(password[:72])   # Always truncate to 72 bytes
     except ValueError as e:
         return templates.TemplateResponse(
-            "register.html", 
-            {"request": request, "error": str(e) + " (Try a shorter password or only use plain letters/numbers.)"}
+            "register.html",
+            {"request": request, "error": str(e) + " (Try a shorter password, or only use plain letters/numbers.)"}
         )
     with db() as conn:
         c = conn.cursor()
         try:
             c.execute(
-                "INSERT INTO users (username, password, join_date) VALUES (?, ?, ?)", 
+                "INSERT INTO users (username, password, join_date) VALUES (?, ?, ?)",
                 (username, hashed, datetime.utcnow().isoformat())
             )
             conn.commit()
@@ -164,7 +167,6 @@ def register_post(request: Request, username: str = Form(...), password: str = F
             return resp
         except sqlite3.IntegrityError:
             return templates.TemplateResponse("register.html", {"request": request, "error": "Username taken."})
-
 @app.get("/logout")
 def logout():
     resp = RedirectResponse(url="/login", status_code=303)
