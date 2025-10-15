@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-import sqlite3, secrets, httpx, asyncio, json
+import sqlite3, secrets, httpx, re
 from typing import Optional, List
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -11,7 +11,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 DB = "picks.db"
+
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
+ESPN_AP_POLL_BASE = "https://www.espn.com/college-football/rankings/_/poll/1/week/{week}/year/{year}/seasontype/2"
 
 def db():
     conn = sqlite3.connect(DB)
@@ -80,23 +82,40 @@ def init_db():
         conn.commit()
 init_db()
 
-def next_saturday(date: datetime) -> datetime:
-    dow = date.weekday()
-    days_ahead = (5 - dow) % 7
-    return date + timedelta(days=days_ahead)
+def get_current_cf_week():
+    """Estimate week number from date (ESPN uses 1-indexed weeks)"""
+    season_start = datetime(2025, 8, 25) # adjust if season start shifts
+    today = datetime.utcnow()
+    return ((today - season_start).days // 7) + 1
 
-async def fetch_top25_games_for_week():
+async def get_ap_top25_team_names():
+    """Scrape the ESPN AP poll for this week and return set of team names shown in column."""
+    year = datetime.utcnow().year
+    week = get_current_cf_week()
+    url = ESPN_AP_POLL_BASE.format(week=week, year=year)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(url)
+        html = resp.text
+
+        # Regex finds display names in ranking table <a ...>Team Name</a>
+        teams = re.findall(r'<a[^>]+href="/college-football/team/_/id/\d+/[^"]+"[^>]*>([^<]+)</a>', html)
+        top25 = set(t.strip() for t in teams if t.strip())
+        print(f"Top 25 extracted: {top25}")
+        return top25
+
+async def fetch_ap_top25_games_for_week():
+    top25_names = await get_ap_top25_team_names()
     today = datetime.utcnow()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
     async with httpx.AsyncClient(timeout=20) as client:
-        scoreboard_url = f"{ESPN_SCOREBOARD}?dates={date_range}&groups=80"
+        scoreboard_url = f"{ESPN_SCOREBOARD}?dates={date_range}"
         scoreboard_resp = await client.get(scoreboard_url)
         scoreboard_data = scoreboard_resp.json()
         events = scoreboard_data.get("events", [])
         games = []
-        for ev in events:  # all Top 25 games this week
+        for ev in events:
             try:
                 comp = (ev.get("competitions") or [{}])[0]
                 comps = comp.get("competitors", []) or []
@@ -104,10 +123,13 @@ async def fetch_top25_games_for_week():
                     continue
                 home = next((c for c in comps if c.get("homeAway") == "home"), {})
                 away = next((c for c in comps if c.get("homeAway") == "away"), {})
-                home_team = home.get("team", {}).get("displayName")
-                away_team = away.get("team", {}).get("displayName")
+                home_name = home.get("team", {}).get("displayName")
+                away_name = away.get("team", {}).get("displayName")
                 home_id = home.get("team", {}).get("id")
                 away_id = away.get("team", {}).get("id")
+                # Only show games where one or both teams are AP Top 25 this week
+                if home_name not in top25_names and away_name not in top25_names:
+                    continue
                 over_under = None
                 odds_list = comp.get("odds") or []
                 if odds_list and "overUnder" in odds_list[0]:
@@ -119,9 +141,9 @@ async def fetch_top25_games_for_week():
                     "game_id": ev.get("id"),
                     "short_name": ev.get("shortName"),
                     "home_id": home_id,
-                    "home_name": home_team,
+                    "home_name": home_name,
                     "away_id": away_id,
-                    "away_name": away_team,
+                    "away_name": away_name,
                     "start_utc": comp.get("date"),
                     "over_under": over_under
                 })
@@ -154,7 +176,7 @@ def upsert_games(games: List[dict]):
 
 async def update_scores_with_finals(date_range):
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}&groups=80")
+        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
         r.raise_for_status()
         data = r.json()
         for ev in data.get("events", []):
@@ -179,7 +201,7 @@ async def root(request: Request):
 
 @app.get("/games", response_class=HTMLResponse)
 async def games(request: Request, user: Optional[str] = None):
-    games = await fetch_top25_games_for_week()
+    games = await fetch_ap_top25_games_for_week()
     upsert_games(games)
     if user:
         with db() as conn:
@@ -350,26 +372,10 @@ async def admin_update_scores():
 
 @app.get("/debug/espn")
 async def debug_espn():
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{ESPN_SCOREBOARD}?groups=80")
-        data = r.json()
-    return {"count": len(data.get("events", [])), "events": [e.get("shortName") for e in data.get("events", [])]}
+    games = await fetch_ap_top25_games_for_week()
+    return {"count": len(games), "events": [g["short_name"] for g in games]}
 
 @app.get("/debug/teamdata")
 async def debug_teamdata():
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{ESPN_SCOREBOARD}?groups=80")
-        data = r.json()
-
-    sample = []
-    for event in data.get("events", [])[:3]:
-        comp = event.get("competitions", [{}])[0]
-        teams = [t["team"] for t in comp.get("competitors", [])]
-        for t in teams:
-            sample.append({
-                "displayName": t.get("displayName"),
-                "abbrev": t.get("abbreviation"),
-                "curatedRank": t.get("curatedRank"),
-                "rankings": t.get("rankings"),
-            })
-    return sample
+    top25_names = await get_ap_top25_team_names()
+    return {"top25": list(top25_names)}
