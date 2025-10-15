@@ -1,25 +1,48 @@
 from datetime import datetime, timedelta
 import sqlite3, secrets, httpx, re
 from typing import Optional, List
-from fastapi import FastAPI, Request, Form, Depends
+from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from passlib.context import CryptContext
-from jose import JWTError, jwt
+from passlib.context import CryptContext     # <-- new
+from jose import JWTError, jwt               # <-- new
 
-# JWT config
-SECRET_KEY = "super-secret-key"  # CHANGE THIS for production!
+SECRET_KEY = "super-secret-key"  # CHANGE THIS before deploying for real!
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+def create_access_token(username: str):
+    to_encode = {"sub": username, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(request: Request):
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        return username
+    except JWTError:
+        return None
+
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 DB = "picks.db"
+ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
+ESPN_AP_POLL_BASE = "https://www.espn.com/college-football/rankings/_/poll/1/week/{week}/year/{year}/seasontype/2"
 
 def db():
     conn = sqlite3.connect(DB)
@@ -50,6 +73,7 @@ def init_db():
             join_date TEXT
         );
         """)
+
         c.execute("""
         CREATE TABLE IF NOT EXISTS picks (
             pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,27 +113,6 @@ def init_db():
         conn.commit()
 init_db()
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def verify_password(plain, hashed):
-    return pwd_context.verify(plain, hashed)
-
-def create_access_token(username: str):
-    to_encode = {"sub": username, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def get_current_user(request: Request):
-    token = request.cookies.get("access_token")
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        return username
-    except JWTError:
-        return None
-
 @app.get("/login", response_class=HTMLResponse)
 def login_get(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "error": None})
@@ -134,9 +137,19 @@ def register_get(request: Request):
 @app.post("/register", response_class=HTMLResponse)
 def register_post(request: Request, username: str = Form(...), password: str = Form(...)):
     password = password.strip()
-    if not (8 <= len(password) <= 72):
-        return templates.TemplateResponse("register.html", {"request": request, "error": "Password must be 8-72 characters (no leading/trailing spaces)."})
-    hashed = get_password_hash(password)
+    password_bytes = password.encode('utf-8')
+    if not (8 <= len(password_bytes) <= 72):
+        return templates.TemplateResponse(
+            "register.html", 
+            {"request": request, "error": "Password must be 8-72 bytes (ASCII or simple Unicode recommended)."}
+        )
+    try:
+        hashed = get_password_hash(password)
+    except ValueError as e:
+        return templates.TemplateResponse(
+            "register.html", 
+            {"request": request, "error": str(e) + " (Try a shorter password or only use plain letters/numbers.)"}
+        )
     with db() as conn:
         c = conn.cursor()
         try:
@@ -152,14 +165,141 @@ def register_post(request: Request, username: str = Form(...), password: str = F
         except sqlite3.IntegrityError:
             return templates.TemplateResponse("register.html", {"request": request, "error": "Username taken."})
 
-
 @app.get("/logout")
 def logout():
     resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie("access_token")
     return resp
 
-# ---------- Begin protected routes ----------
+
+def get_current_cf_week():
+    """Estimate CFB week number for use in AP poll URL"""
+    season_start = datetime(2025, 8, 25) # adjust as needed
+    today = datetime.utcnow()
+    return max(1, ((today - season_start).days // 7) + 1)
+
+async def get_ap_top25_team_names():
+    """Scrape the ESPN AP poll for this week and return set of ranked team names (pure regex)."""
+    year = datetime.utcnow().year
+    week = get_current_cf_week()
+    url = ESPN_AP_POLL_BASE.format(week=week, year=year)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(url)
+        html = resp.text
+
+        # Pure regex: find all ranked table rows with <td>rank</td> ... <a>Team Name</a>
+        rows = re.findall(
+            r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>.*?<a[^>]*>([^<]+)</a>',
+            html,
+            re.DOTALL
+        )
+        # Fallback: match <td>rank</td><td>Team name</td> (sometimes AP page uses plain text)
+        if not rows:
+            rows = re.findall(
+                r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>.*?<td[^>]*>([^<]+)</td>',
+                html,
+                re.DOTALL
+            )
+        top25 = set(team.strip() for rank, team in rows if rank.isdigit() and 1 <= int(rank) <= 25)
+        print(f"Extracted Top 25 teams: {top25}")
+        return top25
+
+def is_top25_team(name, top25_names):
+    name_lc = name.lower()
+    return any(ap_team.lower() in name_lc or name_lc in ap_team.lower() for ap_team in top25_names)
+
+async def fetch_ap_top25_games_for_week():
+    top25_names = await get_ap_top25_team_names()
+    today = datetime.utcnow()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+    date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        scoreboard_url = f"{ESPN_SCOREBOARD}?dates={date_range}"
+        scoreboard_resp = await client.get(scoreboard_url)
+        scoreboard_data = scoreboard_resp.json()
+        events = scoreboard_data.get("events", [])
+        games = []
+        for ev in events:
+            try:
+                comp = (ev.get("competitions") or [{}])[0]
+                comps = comp.get("competitors", []) or []
+                if len(comps) != 2:
+                    continue
+                home = next((c for c in comps if c.get("homeAway") == "home"), {})
+                away = next((c for c in comps if c.get("homeAway") == "away"), {})
+                home_name = home.get("team", {}).get("displayName", "")
+                away_name = away.get("team", {}).get("displayName", "")
+                home_id = home.get("team", {}).get("id")
+                away_id = away.get("team", {}).get("id")
+                # Only display games with at least one AP Top 25 team
+                if not is_top25_team(home_name, top25_names) and not is_top25_team(away_name, top25_names):
+                    continue
+                over_under = None
+                odds_list = comp.get("odds") or []
+                if odds_list and "overUnder" in odds_list[0]:
+                    try:
+                        over_under = float(odds_list[0]["overUnder"])
+                    except (TypeError, ValueError):
+                        over_under = None
+                games.append({
+                    "game_id": ev.get("id"),
+                    "short_name": ev.get("shortName"),
+                    "home_id": home_id,
+                    "home_name": home_name,
+                    "away_id": away_id,
+                    "away_name": away_name,
+                    "start_utc": comp.get("date"),
+                    "over_under": over_under
+                })
+            except Exception as e:
+                print("Error processing event:", e)
+                continue
+        print(f"Fetched {len(games)} Top 25 games for display")
+        return games
+
+def upsert_games(games: List[dict]):
+    with db() as conn:
+        c = conn.cursor()
+        for g in games:
+            c.execute("""
+            INSERT INTO games (game_id, short_name, home_id, home_name, away_id, away_name, start_utc, over_under)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(game_id) DO UPDATE SET
+                short_name=excluded.short_name,
+                home_id=excluded.home_id,
+                home_name=excluded.home_name,
+                away_id=excluded.away_id,
+                away_name=excluded.away_name,
+                start_utc=excluded.start_utc,
+                over_under=excluded.over_under
+            """, (
+                g["game_id"], g["short_name"], g["home_id"], g["home_name"],
+                g["away_id"], g["away_name"], g["start_utc"], g["over_under"]
+            ))
+        conn.commit()
+
+async def update_scores_with_finals(date_range):
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
+        r.raise_for_status()
+        data = r.json()
+        for ev in data.get("events", []):
+            gid = ev.get("id")
+            comp = (ev.get("competitions") or [{}])[0]
+            home = [c for c in comp.get("competitors", []) if c.get("homeAway") == "home"]
+            away = [c for c in comp.get("competitors", []) if c.get("homeAway") == "away"]
+            home_score = int(home[0]["score"]) if home and "score" in home[0] else None
+            away_score = int(away[0]["score"]) if away and "score" in away[0] else None
+            status = (comp.get("status") or {}).get("type", {})
+            completed = bool(status.get("completed"))
+            with db() as conn:
+                conn.execute(
+                    "UPDATE games SET final_home_score=?, final_away_score=?, is_final=? WHERE game_id=?",
+                    (home_score, away_score, completed, gid)
+                )
+                conn.commit()
+
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     return RedirectResponse(url="/games")
@@ -171,26 +311,28 @@ async def games(request: Request):
         return RedirectResponse("/login")
     games = await fetch_ap_top25_games_for_week()
     upsert_games(games)
-    with db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT game_id FROM picks WHERE user=?", (user,))
-        picked_game_ids = {row["game_id"] for row in c.fetchall()}
-    games = [g for g in games if g["game_id"] not in picked_game_ids]
+    if user:
+        with db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT game_id FROM picks WHERE user=?",
+                (user,)
+            )
+            picked_game_ids = {row["game_id"] for row in c.fetchall()}
+        games = [g for g in games if g["game_id"] not in picked_game_ids]
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
 
 @app.post("/predict")
 async def make_prediction(
     request: Request,
+    user: str = Form(...),
     game_id: str = Form(...),
     winner: str = Form(...),
     pick_total: str = Form(...)
 ):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login")
     with db() as conn:
         c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO users (username, password, join_date) VALUES (?, ?, ?, ?)", (user, "", datetime.utcnow().isoformat())) # Password left blank if user not registered (but this should never happen now)
+        c.execute("INSERT OR IGNORE INTO users (username, join_date) VALUES (?, ?)", (user, datetime.utcnow().isoformat()))
         try:
             c.execute("""
                 INSERT INTO picks (user, game_id, pick_winner, pick_total, made_at)
@@ -199,7 +341,7 @@ async def make_prediction(
             conn.commit()
         except sqlite3.IntegrityError:
             pass
-    return RedirectResponse(url=f"/games", status_code=303)
+    return RedirectResponse(url=f"/games?user={user}", status_code=303)
 
 @app.get("/profile", response_class=HTMLResponse)
 def profile(request: Request):
@@ -300,10 +442,7 @@ def groups(request: Request):
     return templates.TemplateResponse("groups.html", {"request": request, "groups": groups, "user": user})
 
 @app.post("/groups/create")
-def create_group(request: Request, group_name: str = Form(...)):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login")
+def create_group(request: Request, group_name: str = Form(...), user: str = "anonymous"):
     access_code = secrets.token_hex(3)
     with db() as conn:
         c = conn.cursor()
@@ -340,8 +479,19 @@ def leaderboard(request: Request):
 
 @app.post("/admin/update_scores")
 async def admin_update_scores():
-    # ... as before, admin-only route: consider further protection
     today = datetime.utcnow()
     sat = next_saturday(today)
     sun = sat + timedelta(days=1)
     date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
+    await update_scores_with_finals(date_range)
+    return {"status": "game results updated"}
+
+@app.get("/debug/espn")
+async def debug_espn():
+    games = await fetch_ap_top25_games_for_week()
+    return {"count": len(games), "events": [g["short_name"] for g in games]}
+
+@app.get("/debug/teamdata")
+async def debug_teamdata():
+    top25_names = await get_ap_top25_team_names()
+    return {"top25": list(top25_names)}
