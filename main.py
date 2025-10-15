@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-import sqlite3, secrets, httpx, asyncio, json, re
+import sqlite3, secrets, httpx, asyncio, json
 from typing import Optional, List
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -12,7 +12,6 @@ templates = Jinja2Templates(directory="templates")
 
 DB = "picks.db"
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
-ESPN_TEAMS = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams"
 
 def db():
     conn = sqlite3.connect(DB)
@@ -86,60 +85,18 @@ def next_saturday(date: datetime) -> datetime:
     days_ahead = (5 - dow) % 7
     return date + timedelta(days=days_ahead)
 
-def get_team_rank(team_dict):
-    """
-    Extract the team's poll rank from ESPN API JSON. Returns int if found, else None.
-    """
-    curated_rank = team_dict.get("curatedRank", {})
-    if isinstance(curated_rank, dict):
-        rank_val = curated_rank.get("current")
-        try:
-            rank_int = int(rank_val)
-            return rank_int
-        except Exception:
-            pass
-    for key in ["rank", "currentRank", "seed"]:
-        val = team_dict.get(key)
-        try:
-            rank_int = int(val)
-            return rank_int
-        except Exception:
-            continue
-    rankings = team_dict.get("rankings", [])
-    if rankings and isinstance(rankings, list):
-        try:
-            first_rank = rankings[0].get("rank")
-            if first_rank is not None:
-                return int(first_rank)
-        except Exception:
-            pass
-    return None
-
-async def fetch_games_with_ranked_teams_for_week():
+async def fetch_top25_games_for_week():
     today = datetime.utcnow()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
-
     async with httpx.AsyncClient(timeout=20) as client:
-        # Get current week's games and all team data
-        scoreboard_resp = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
+        scoreboard_url = f"{ESPN_SCOREBOARD}?dates={date_range}&groups=80"
+        scoreboard_resp = await client.get(scoreboard_url)
         scoreboard_data = scoreboard_resp.json()
         events = scoreboard_data.get("events", [])
-
-        teams_resp = await client.get(ESPN_TEAMS)
-        teams_data = teams_resp.json()
-
-        # Build set of ranked FBS team names
-        ranked_teams = set()
-        for item in teams_data.get("sports", [])[0].get("leagues", [])[0].get("teams", []):
-            team = item.get("team", {})
-            rank = get_team_rank(team)
-            if rank and (1 <= rank <= 25):
-                ranked_teams.add(team.get("displayName"))
-
         games = []
-        for ev in events:
+        for ev in events:  # all Top 25 games this week
             try:
                 comp = (ev.get("competitions") or [{}])[0]
                 comps = comp.get("competitors", []) or []
@@ -151,32 +108,27 @@ async def fetch_games_with_ranked_teams_for_week():
                 away_team = away.get("team", {}).get("displayName")
                 home_id = home.get("team", {}).get("id")
                 away_id = away.get("team", {}).get("id")
-
-                # Only include games where at least one team is ranked
-                if home_team in ranked_teams or away_team in ranked_teams:
-                    over_under = None
-                    odds_list = comp.get("odds") or []
-                    if odds_list and "overUnder" in odds_list[0]:
-                        try:
-                            over_under = float(odds_list[0]["overUnder"])
-                        except (TypeError, ValueError):
-                            over_under = None
-
-                    games.append({
-                        "game_id": ev.get("id"),
-                        "short_name": ev.get("shortName"),
-                        "home_id": home_id,
-                        "home_name": home_team,
-                        "away_id": away_id,
-                        "away_name": away_team,
-                        "start_utc": comp.get("date"),
-                        "over_under": over_under
-                    })
+                over_under = None
+                odds_list = comp.get("odds") or []
+                if odds_list and "overUnder" in odds_list[0]:
+                    try:
+                        over_under = float(odds_list[0]["overUnder"])
+                    except (TypeError, ValueError):
+                        over_under = None
+                games.append({
+                    "game_id": ev.get("id"),
+                    "short_name": ev.get("shortName"),
+                    "home_id": home_id,
+                    "home_name": home_team,
+                    "away_id": away_id,
+                    "away_name": away_team,
+                    "start_utc": comp.get("date"),
+                    "over_under": over_under
+                })
             except Exception as e:
                 print("Error processing event:", e)
                 continue
-
-        print(f"Fetched {len(games)} games with at least one ranked team.")
+        print(f"Fetched {len(games)} Top 25 games for display")
         return games
 
 def upsert_games(games: List[dict]):
@@ -202,7 +154,7 @@ def upsert_games(games: List[dict]):
 
 async def update_scores_with_finals(date_range):
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
+        r = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}&groups=80")
         r.raise_for_status()
         data = r.json()
         for ev in data.get("events", []):
@@ -227,7 +179,7 @@ async def root(request: Request):
 
 @app.get("/games", response_class=HTMLResponse)
 async def games(request: Request, user: Optional[str] = None):
-    games = await fetch_games_with_ranked_teams_for_week()
+    games = await fetch_top25_games_for_week()
     upsert_games(games)
     if user:
         with db() as conn:
@@ -238,9 +190,6 @@ async def games(request: Request, user: Optional[str] = None):
             )
             picked_game_ids = {row["game_id"] for row in c.fetchall()}
         games = [g for g in games if g["game_id"] not in picked_game_ids]
-    # For debugging:
-    if not games:
-        print("No games found to display!")
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
 
 @app.post("/predict")
@@ -399,22 +348,21 @@ async def admin_update_scores():
     await update_scores_with_finals(date_range)
     return {"status": "game results updated"}
 
-# Debug endpoints (for testing)
 @app.get("/debug/espn")
 async def debug_espn():
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(ESPN_SCOREBOARD)
+        r = await client.get(f"{ESPN_SCOREBOARD}?groups=80")
         data = r.json()
     return {"count": len(data.get("events", [])), "events": [e.get("shortName") for e in data.get("events", [])]}
 
 @app.get("/debug/teamdata")
 async def debug_teamdata():
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(ESPN_SCOREBOARD)
+        r = await client.get(f"{ESPN_SCOREBOARD}?groups=80")
         data = r.json()
 
     sample = []
-    for event in data.get("events", [])[:3]:  # only show first 3 games to keep output short
+    for event in data.get("events", [])[:3]:
         comp = event.get("competitions", [{}])[0]
         teams = [t["team"] for t in comp.get("competitors", [])]
         for t in teams:
@@ -424,5 +372,4 @@ async def debug_teamdata():
                 "curatedRank": t.get("curatedRank"),
                 "rankings": t.get("rankings"),
             })
-
     return sample
