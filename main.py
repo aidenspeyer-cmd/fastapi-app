@@ -412,3 +412,10 @@ async def admin_update_scores():
     await update_scores_with_finals(date_range)
     return {"status": "game results updated"}
 #hopefully this one works this time
+@app.get("/debug/espn")
+async def debug_espn():
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(ESPN_SCOREBOARD)
+        data = r.json()
+    return {"count": len(data.get("events", [])), "events": [e.get("shortName") for e in data.get("events", [])]}
+
