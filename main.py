@@ -120,9 +120,11 @@ def get_team_rank(team_dict):
 
 async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
     today = datetime.utcnow()
+    # EXPAND THE SEARCH TO FRI-SUN (you can change days as desired)
     sat = next_saturday(today)
+    fri = sat - timedelta(days=1)
     sun = sat + timedelta(days=1)
-    date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
+    date_range = f"{fri.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
     url = f"{ESPN_SCOREBOARD}?dates={date_range}"
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url)
@@ -139,15 +141,9 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
             home_team = home.get("team", {})
             away_team = away.get("team", {})
 
-            # Rank is directly at the competitor level
-            try:
-                home_rank = int(home.get("rank")) if "rank" in home else None
-            except Exception:
-                home_rank = None
-            try:
-                away_rank = int(away.get("rank")) if "rank" in away else None
-            except Exception:
-                away_rank = None
+            # Use robust get_team_rank instead of c.get("rank")
+            home_rank = get_team_rank(home_team)
+            away_rank = get_team_rank(away_team)
 
             over_under = None
             odds_list = comp.get("odds") or []
@@ -157,8 +153,11 @@ async def fetch_games_with_ranked_teams_for_week() -> List[dict]:
                 except (TypeError, ValueError):
                     over_under = None
 
-            # Only include games with at least one ranked team
-            if (home_rank is not None) or (away_rank is not None):
+            # Only include games with at least one ranked team in top 25
+            if (
+                (home_rank is not None and 1 <= home_rank <= 25) or
+                (away_rank is not None and 1 <= away_rank <= 25)
+            ):
                 games.append({
                     "game_id": gid,
                     "short_name": ev.get("shortName"),
