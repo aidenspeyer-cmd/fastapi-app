@@ -407,3 +407,22 @@ async def debug_espn():
         data = r.json()
     return {"count": len(data.get("events", [])), "events": [e.get("shortName") for e in data.get("events", [])]}
 
+@app.get("/debug/teamdata")
+async def debug_teamdata():
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(ESPN_SCOREBOARD)
+        data = r.json()
+
+    sample = []
+    for event in data.get("events", [])[:3]:  # only show first 3 games to keep output short
+        comp = event.get("competitions", [{}])[0]
+        teams = [t["team"] for t in comp.get("competitors", [])]
+        for t in teams:
+            sample.append({
+                "displayName": t.get("displayName"),
+                "abbrev": t.get("abbreviation"),
+                "curatedRank": t.get("curatedRank"),
+                "rankings": t.get("rankings"),
+            })
+
+    return sample
