@@ -313,16 +313,35 @@ async def games(request: Request):
         return RedirectResponse("/login")
     games = await fetch_ap_top25_games_for_week()
     upsert_games(games)
-    if user:
-        with db() as conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT game_id FROM picks WHERE user=?",
-                (user,)
-            )
-            picked_game_ids = {row["game_id"] for row in c.fetchall()}
-        games = [g for g in games if g["game_id"] not in picked_game_ids]
-    return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
+    picked_game_ids = set()
+    with db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT game_id, pick_winner, pick_total FROM picks WHERE user=?",
+            (user,)
+        )
+        # Store user’s picks as a dict for display
+        picks_dict = {row["game_id"]: {"pick_winner": row["pick_winner"], "pick_total": row["pick_total"]} for row in c.fetchall()}
+        picked_game_ids = set(picks_dict.keys())
+
+    # Separate games the user has and hasn't picked
+    unpicked_games = [g for g in games if g["game_id"] not in picked_game_ids]
+    picked_games = [g for g in games if g["game_id"] in picked_game_ids]
+
+    # Add pick info to picked_games for display
+    for g in picked_games:
+        g["pick_winner"] = picks_dict[g["game_id"]]["pick_winner"]
+        g["pick_total"] = picks_dict[g["game_id"]]["pick_total"]
+
+    return templates.TemplateResponse(
+        "games.html",
+        {
+            "request": request,
+            "games": unpicked_games,
+            "picked_games": picked_games,
+            "user": user
+        }
+    )
 
 @app.post("/predict")
 async def make_prediction(
