@@ -88,10 +88,8 @@ def next_saturday(date: datetime) -> datetime:
 
 def get_team_rank(team_dict):
     """
-    Robustly extracts the team's poll rank from ESPN API JSON.
-    Returns int if found, otherwise None.
+    Extract the team's poll rank from ESPN API JSON. Returns int if found, else None.
     """
-    # Check curatedRank: {'current': 1}
     curated_rank = team_dict.get("curatedRank", {})
     if isinstance(curated_rank, dict):
         rank_val = curated_rank.get("current")
@@ -100,7 +98,6 @@ def get_team_rank(team_dict):
             return rank_int
         except Exception:
             pass
-    # Fallback fields
     for key in ["rank", "currentRank", "seed"]:
         val = team_dict.get(key)
         try:
@@ -108,7 +105,6 @@ def get_team_rank(team_dict):
             return rank_int
         except Exception:
             continue
-    # Try rankings list (AP poll usually first)
     rankings = team_dict.get("rankings", [])
     if rankings and isinstance(rankings, list):
         try:
@@ -118,6 +114,7 @@ def get_team_rank(team_dict):
         except Exception:
             pass
     return None
+
 async def fetch_games_with_ranked_teams_for_week():
     today = datetime.utcnow()
     monday = today - timedelta(days=today.weekday())
@@ -125,83 +122,63 @@ async def fetch_games_with_ranked_teams_for_week():
     date_range = f"{monday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}"
 
     async with httpx.AsyncClient(timeout=20) as client:
-        # Fetch current week’s games
+        # Get current week's games and all team data
         scoreboard_resp = await client.get(f"{ESPN_SCOREBOARD}?dates={date_range}")
         scoreboard_data = scoreboard_resp.json()
+        events = scoreboard_data.get("events", [])
 
-        # Fetch all FBS teams and extract ranks
         teams_resp = await client.get(ESPN_TEAMS)
         teams_data = teams_resp.json()
+
+        # Build set of ranked FBS team names
         ranked_teams = set()
         for item in teams_data.get("sports", [])[0].get("leagues", [])[0].get("teams", []):
             team = item.get("team", {})
-            rank_info = team.get("rankings", []) or team.get("curatedRank")
-            rank = None
-            if isinstance(rank_info, list) and rank_info:
-                rank = rank_info[0].get("rank")
-            elif isinstance(rank_info, dict):
-                rank = rank_info.get("current")
+            rank = get_team_rank(team)
+            if rank and (1 <= rank <= 25):
+                ranked_teams.add(team.get("displayName"))
 
+        games = []
+        for ev in events:
             try:
-                rank = int(rank)
-                if 1 <= rank <= 25:
-                    ranked_teams.add(team.get("displayName"))
-            except Exception:
+                comp = (ev.get("competitions") or [{}])[0]
+                comps = comp.get("competitors", []) or []
+                if len(comps) != 2:
+                    continue
+                home = next((c for c in comps if c.get("homeAway") == "home"), {})
+                away = next((c for c in comps if c.get("homeAway") == "away"), {})
+                home_team = home.get("team", {}).get("displayName")
+                away_team = away.get("team", {}).get("displayName")
+                home_id = home.get("team", {}).get("id")
+                away_id = away.get("team", {}).get("id")
+
+                # Only include games where at least one team is ranked
+                if home_team in ranked_teams or away_team in ranked_teams:
+                    over_under = None
+                    odds_list = comp.get("odds") or []
+                    if odds_list and "overUnder" in odds_list[0]:
+                        try:
+                            over_under = float(odds_list[0]["overUnder"])
+                        except (TypeError, ValueError):
+                            over_under = None
+
+                    games.append({
+                        "game_id": ev.get("id"),
+                        "short_name": ev.get("shortName"),
+                        "home_id": home_id,
+                        "home_name": home_team,
+                        "away_id": away_id,
+                        "away_name": away_team,
+                        "start_utc": comp.get("date"),
+                        "over_under": over_under
+                    })
+            except Exception as e:
+                print("Error processing event:", e)
                 continue
 
-    # Filter games
-    games = []
-    for ev in events:
-        try:
-            comp = (ev.get("competitions") or [{}])[0]
-            comps = comp.get("competitors", []) or []
+        print(f"Fetched {len(games)} games with at least one ranked team.")
+        return games
 
-            # Log teams and what get_rank() returns
-            for c in comps:
-                team = c.get("team") or {}
-                name = team.get("displayName") or "Unknown"
-                rank = get_rank(team)
-                print(f"Team: {name} → get_rank: {rank}")
-
-            # Skip bad or incomplete competitions
-            if len(comps) != 2:
-                continue
-    
-            home = next((c for c in comps if c.get("homeAway") == "home"), {})
-            away = next((c for c in comps if c.get("homeAway") == "away"), {})
-            home_team = home.get("team", {}).get("displayName")
-            away_team = away.get("team", {}).get("displayName")
-
-            # Only add if one of the teams is ranked
-            if home_team in ranked_teams or away_team in ranked_teams:
-                over_under = None
-                odds_list = comp.get("odds") or []
-                if odds_list:
-                    try:
-                        over_under = float(odds_list[0].get("overUnder"))
-                    except (TypeError, ValueError):
-                        over_under = None
-
-            games.append({
-                "home_team": home_team,
-                "away_team": away_team,
-                "over_under": over_under,
-            })
-
-    except Exception as e:
-        print("⚠️ Error processing event:", e)
-        continue
-
-            games.append({
-                "game_id": ev.get("id"),
-                "short_name": ev.get("shortName"),
-                "home_name": home_team,
-                "away_name": away_team,
-                "start_utc": comp.get("date"),
-                "over_under": over_under
-            })
-
-    return games
 def upsert_games(games: List[dict]):
     with db() as conn:
         c = conn.cursor()
@@ -261,7 +238,11 @@ async def games(request: Request, user: Optional[str] = None):
             )
             picked_game_ids = {row["game_id"] for row in c.fetchall()}
         games = [g for g in games if g["game_id"] not in picked_game_ids]
+    # For debugging:
+    if not games:
+        print("No games found to display!")
     return templates.TemplateResponse("games.html", {"request": request, "games": games, "user": user})
+
 @app.post("/predict")
 async def make_prediction(
     request: Request,
@@ -417,7 +398,8 @@ async def admin_update_scores():
     date_range = f"{sat.strftime('%Y%m%d')}-{sun.strftime('%Y%m%d')}"
     await update_scores_with_finals(date_range)
     return {"status": "game results updated"}
-#hopefully this one works this time
+
+# Debug endpoints (for testing)
 @app.get("/debug/espn")
 async def debug_espn():
     async with httpx.AsyncClient(timeout=20) as client:
